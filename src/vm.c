@@ -238,6 +238,7 @@ void vm_init(FILE *out, FILE *err) {
     vm.out = out;
     vm.err = err;
     vm.next_gc = GC_THRESHOLD;
+    vm.string_max = FABLE_STRING_MAX;
     table_init(&vm.globals);
     table_init(&vm.strings);
     define_native("print", n_print, -1);
@@ -432,7 +433,13 @@ static InterpretResult run(void) {
                 } else if (IS_OBJ(a) && AS_OBJ(a)->type == OBJ_STRING &&
                            IS_OBJ(b) && AS_OBJ(b)->type == OBJ_STRING) {
                     ObjString *s1 = AS_STRING(a), *s2 = AS_STRING(b);
-                    int n = s1->len + s2->len;
+                    size_t need = (size_t)s1->len + (size_t)s2->len;   /* size_t: no signed overflow */
+                    if (need > vm.string_max) {
+                        runtime_error("string too long: %d + %d bytes is over the %zu-byte limit",
+                                      s1->len, s2->len, vm.string_max);
+                        goto rt_fail;
+                    }
+                    int n = (int)need;
                     char *buf = GROW_ARRAY(char, NULL, n + 1);
                     memcpy(buf, s1->chars, (size_t)s1->len);
                     memcpy(buf + s1->len, s2->chars, (size_t)s2->len + 1);

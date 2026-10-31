@@ -279,6 +279,7 @@ static Rule *rule(TokenType t) { return &rules[t]; }
 
 
 static void parse_precedence(Precedence prec) {
+    if (P.depth_failed) return;   /* unwinding after a depth guard */
     if (P.expr_depth > EXPR_DEPTH_MAX) {
         depth_error("expression nested too deeply (limit %d)", EXPR_DEPTH_MAX);
         return;
@@ -507,7 +508,7 @@ static void function_body(FnKind kind, Token name_tok) {
     }
     consume(T_RPAREN, "expected ')' after parameters");
     consume(T_LBRACE, "expected '{' before the function body");
-    while (!check(T_RBRACE) && !check(T_EOF)) declaration();
+    while (!check(T_RBRACE) && !check(T_EOF) && !P.depth_failed) declaration();
     consume(T_RBRACE, "expected '}' after the function body");
     ObjFunction *fn = compiler_end();
     emit16(OP_CLOSURE, make_constant(OBJ_VAL(fn)));

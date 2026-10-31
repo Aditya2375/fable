@@ -140,6 +140,38 @@ def main():
                 print(f"FAIL blob {i}: sanitizer report\n{p.stderr.decode(errors='replace')[:400]}\nblob: {blob!r}")
                 fails += 1
 
+    # Termination tripwires (round-5 HIGH1): a depth guard firing in any
+    # position - fn body, nested block, call args, list literal, unbraced
+    # chain, deep blocks, deep fns - must end in one clean error. Pre-fix
+    # the fn-body parse loop spun forever; a regression times out here.
+    deep = "(" * 513 + "7" + ")" * 513
+    chain = "fn f() { " + "if (1) " * 260 + "x; print(1); }"
+    blocks = "fn f() { " + "{" * 300 + "}" * 300 + " print(1); }"
+    fns = "".join(f"fn g{i}() {{ " for i in range(300)) + "x;" + "}" * 300
+    tripwires = [
+        f"fn f() {{ let x = {deep}; y; }}",
+        f"fn f() {{ y; let x = {deep}; }}",
+        f"fn f() {{ {{ let x = {deep}; }} print(1); }}",
+        f"{{ let x = {deep}; }} print(1);",
+        f"fn g(a) {{ return a; }} fn f() {{ let x = g({deep}); y; }}",
+        f"fn f() {{ let xs = [{deep}]; y; }}",
+        f"fn f() {{ let y = 1; return {deep}; }}",
+        f"fn f() {{ while ({deep}) {{ }} y; }}",
+        f"fn f() {{ for (let i = {deep}; i < 3; i = i + 1) {{ }} y; }}",
+        chain, blocks, fns,
+    ]
+    for i, src in enumerate(tripwires):
+        try:
+            p = subprocess.run([args.bin, "-c", src], capture_output=True, text=True, timeout=10)
+        except subprocess.TimeoutExpired:
+            print(f"FAIL tripwire {i}: did not terminate in 10s")
+            fails += 1
+            continue
+        if p.returncode == 0 or "too deeply" not in p.stderr:
+            print(f"FAIL tripwire {i}: exit {p.returncode}, stderr: {p.stderr[:200]}")
+            fails += 1
+    print(f"fuzz: {len(tripwires)} termination tripwires passed" if not fails else "")
+
     if fails:
         print(f"fuzz: {fails} failures")
         return 1

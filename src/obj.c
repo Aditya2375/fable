@@ -137,7 +137,7 @@ bool double_of_string(const char *s, int len, double *out) {
      * [-]digits[.digits][(e|E)[+|-]digits] - no '+', digits required on both
      * sides of the point - plus the exact words inf and nan (so
      * num(str(x)) round-trips for every double). */
-    if (len == 0 || len > 40) return false;
+    if (len == 0) return false;   /* no length cap: the lexer has none either */
     if ((len == 3 && memcmp(s, "inf", 3) == 0) || (len == 4 && memcmp(s, "-inf", 4) == 0) ||
         (len == 3 && memcmp(s, "nan", 3) == 0) || (len == 4 && memcmp(s, "-nan", 4) == 0)) {
         *out = s[0] == '-' ? -(s[1] == 'i' ? INFINITY : NAN) : (s[0] == 'i' ? INFINITY : NAN);
@@ -162,10 +162,11 @@ bool double_of_string(const char *s, int len, double *out) {
         if (edigits == 0) return false;
     }
     if (i != len) return false;
-    char buf[41];
+    char *buf = GROW_ARRAY(char, NULL, len + 1);
     memcpy(buf, s, (size_t)len);
     buf[len] = '\0';
     *out = strtod(buf, NULL);
+    fable_realloc(buf, 0);
     return true;
 }
 

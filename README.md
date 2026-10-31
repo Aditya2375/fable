@@ -4,7 +4,7 @@ fable is a small, complete programming language: a tree-walk-free, bytecode
 interpreter written in C11 with no dependencies beyond libc and libm. It has
 lexically scoped variables, first-class functions, closures with shared
 upvalues, lists, strings, and a mark-sweep garbage collector. The interpreter core is
-2819 lines of C.
+2835 lines of C.
 
 Try it in your browser: **https://aditya2375.github.io/fable/** - the same C
 compiled to WebAssembly, running entirely on your machine.
@@ -104,8 +104,9 @@ identity.
 
 ### Built-ins
 
-`print(x)`, `len(string|list)`, `push(list, v)`, `pop(list)`, `str(v)`,
-`num(string)`, `type(v)`, `clock()`, `abs(x)`, `floor(x)`, `sqrt(x)`.
+`print(...)` (variadic: arguments print space-separated),
+`len(string|list)`, `push(list, v)`, `pop(list)`, `str(v)`,
+`num(string|bool)`, `type(v)`, `clock()`, `abs(x)`, `floor(x)`, `sqrt(x)`.
 
 ### Comments and syntax
 
@@ -117,11 +118,13 @@ continues on the next line with a `... ` prompt.
 `str(v)` renders any value exactly the way `print` would (lists, cycles
 included; `str(f)` is `<fn name>`).
 
-`num()` is strict: it accepts exactly the source-literal grammar
-(`-12.5e3` - no `+` sign, digits on both sides of the point) plus the exact
+`num()` is strict: on a string it accepts exactly the source-literal
+grammar (`-12.5e3` - no `+` sign, digits on both sides of the point, no
+length cap, matching the lexer) plus the exact
 words `inf`/`nan` (so `num(str(x))` round-trips - except `nan`, which by
 IEEE rule never equals itself), and rejects whitespace, hex, empty strings
-and trailing garbage.
+and trailing garbage. On a bool it returns 1 or 0; a number passes through
+unchanged.
 
 In the terminal REPL, ending input with a bracket, string or comment still
 open is an error (`unexpected end of input`, nonzero exit), and so is a
@@ -157,9 +160,16 @@ covered by a unit test: call depth is capped at 1024 frames (65536 stack
 values, `stack overflow` past that, traces capped at 12 frames plus a
 `... N more frames` summary); expressions nest at most 512 levels - each
 nested construct (parentheses, list brackets, unary operators) costs
-exactly one level, mixed or not - blocks 256, statement chains 256,
-function definitions 256; list printing detects
-cycles (`[[...]]`) and caps nesting at 64 levels (`...`).
+exactly one level, mixed or not, and so does each function-call or
+list-element layer (an argument or element nests 511 constructs deep
+inside its brackets, 510 inside two layers, and so on) - blocks 256,
+statement chains 256,
+function definitions 256; string concatenation caps the result at 256 MB
+(`string too long` past that); list printing detects
+cycles (`[[...]]`) and caps nesting at 64 levels (`...`). After any depth
+guard fires, parsing stops with that one error - every parse loop exits
+instead of spinning (regression-tested with a 10-second wall-clock guard
+in the shell and fuzz suites, natively and in the wasm smoke test).
 
 Named function *expressions* (`let f = fn g() {...}`) bind only `f`; the inner
 name is display metadata, not a self-reference. Use a `fn` declaration or a
@@ -197,7 +207,7 @@ byte counter tracks live bytes exactly, so long sessions don't ratchet); `make s
 ## Testing
 
 - `make test` runs everything:
-  - a C unit suite (`tests/unit/test-unit.c`) with **571 checks** covering
+  - a C unit suite (`tests/unit/test-unit.c`) with **619 checks** covering
     the lexer, values, hash table, bytecode chunks, and end-to-end programs
     (closures, recursion, shared upvalues, lists, error paths, IEEE edge
     cases, GC-safety patterns, and every resource limit above);

@@ -9,8 +9,7 @@ void lexer_init(Lexer *lx, const char *src) {
     lx->cur = src;
     lx->line = 1;
     lx->last_token_line = 1;
-    lx->failed = false;
-    lx->unterminated_comment = false;
+    lx->unterminated_comment_line = 0;
 }
 
 static bool at_end(Lexer *lx) { return *lx->cur == '\0'; }
@@ -32,13 +31,12 @@ static Token make(Lexer *lx, TokenType t) {
     return tok;
 }
 
-static Token error_at(Lexer *lx, const char *msg) {
-    lx->failed = true;
+static Token error_at(int line, const char *msg) {
     Token tok;
     tok.type = T_ERROR;
     tok.start = msg;
     tok.len = (int)strlen(msg);
-    tok.line = lx->line;
+    tok.line = line;
     return tok;
 }
 
@@ -55,6 +53,7 @@ static void skip_space(Lexer *lx) {
                 if (peek_next(lx) == '/') {
                     while (peek(lx) != '\n' && !at_end(lx)) advance(lx);
                 } else if (peek_next(lx) == '*') {
+                    int comment_line = lx->line;   /* anchor errors where the comment opens */
                     advance(lx); advance(lx);
                     int depth = 1;
                     while (depth > 0 && !at_end(lx)) {
@@ -63,7 +62,7 @@ static void skip_space(Lexer *lx) {
                         else if (peek(lx) == '*' && peek_next(lx) == '/') { depth--; advance(lx); advance(lx); }
                         else advance(lx);
                     }
-                    if (depth > 0) lx->unterminated_comment = true;
+                    if (depth > 0) lx->unterminated_comment_line = comment_line;
                 } else return;
                 break;
             default: return;
@@ -109,12 +108,13 @@ static TokenType ident_type(Lexer *lx) {
 }
 
 static Token string_lit(Lexer *lx) {
+    int start_line = lx->line;   /* the line of the opening quote */
     while (peek(lx) != '"' && !at_end(lx)) {
         if (peek(lx) == '\n') lx->line++;
         if (peek(lx) == '\\' && peek_next(lx) != '\0') { advance(lx); advance(lx); continue; }
         advance(lx);
     }
-    if (at_end(lx)) return error_at(lx, "unterminated string");
+    if (at_end(lx)) return error_at(start_line, "unterminated string");
     advance(lx);   /* closing quote */
     return make(lx, T_STRING);
 }
@@ -140,9 +140,10 @@ static Token number_lit(Lexer *lx) {
 Token lexer_next(Lexer *lx) {
     skip_space(lx);
     lx->start = lx->cur;
-    if (lx->unterminated_comment) {
-        lx->unterminated_comment = false;
-        return error_at(lx, "unterminated block comment");
+    if (lx->unterminated_comment_line) {
+        int line = lx->unterminated_comment_line;
+        lx->unterminated_comment_line = 0;
+        return error_at(line, "unterminated block comment");
     }
     if (at_end(lx)) {
         /* "at end" errors point at the last real token's line, not past a
@@ -180,7 +181,7 @@ Token lexer_next(Lexer *lx) {
         case '>': return make(lx, match(lx, '=') ? T_GTE : T_GT);
         case '"': return string_lit(lx);
     }
-    return error_at(lx, "unexpected character");
+    return error_at(lx->line, "unexpected character");
 }
 
 const char *token_name(TokenType t) {

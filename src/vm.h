@@ -37,6 +37,7 @@ typedef struct VM {
     Obj **gray_stack;
     size_t bytes_allocated;
     size_t next_gc;
+    size_t string_max;     /* concatenation cap (FABLE_STRING_MAX; tests lower it) */
     int gc_paused; /* >0 disables collection (tests with unrooted handles) */
     struct Compiler *compilers;  /* active compiler chain (GC roots) */
     /* output + error channels (the wasm build points these at the page) */

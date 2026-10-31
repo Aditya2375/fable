@@ -49,9 +49,11 @@ EMSCRIPTEN_KEEPALIVE
 int fable_exec(const char *src) {
     size_t n = strlen(src);
     if (pending_len + n + 2 > pending_cap) {
-        pending_cap = (pending_len + n + 2) * 2;
-        pending = realloc(pending, pending_cap);
-        if (!pending) return 1;
+        size_t new_cap = (pending_len + n + 2) * 2;
+        char *np = realloc(pending, new_cap);   /* temp: a failed realloc must not leak the old buffer */
+        if (!np) { pending_clear(); return 1; }
+        pending = np;
+        pending_cap = new_cap;
     }
     memcpy(pending + pending_len, src, n);
     pending_len += n;

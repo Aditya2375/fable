@@ -739,9 +739,189 @@ static void critic_r4(void) {
     free(out);
 }
 
+
+/* ---- critic round 5 ---- */
+/* "("*n + "7" + ")"*n: an expression n levels deep */
+static char *src_parens(int n) {
+    char *s = malloc((size_t)n * 2 + 2), *w = s;
+    for (int i = 0; i < n; i++) *w++ = '(';
+    *w++ = '7';
+    for (int i = 0; i < n; i++) *w++ = ')';
+    *w = '\0';
+    return s;
+}
+/* "fn g<i>() { " repeated n times, then "x;", then n closing braces */
+static char *src_nested_fns(int n) {
+    size_t cap = (size_t)n * 24 + 8;
+    char *s = malloc(cap), *w = s;
+    for (int i = 0; i < n; i++) w += sprintf(w, "fn g%d() { ", i);
+    w += sprintf(w, "x;");
+    for (int i = 0; i < n; i++) *w++ = '}';
+    *w = '\0';
+    return s;
+}
+
+/* HIGH1: when a depth guard fires mid-parse, every parse loop must exit -
+ * pre-fix the function-body loop called declaration() forever (100% CPU,
+ * the wasm demo froze the tab). Each case is a guard in a different
+ * position: inside a fn body (middle and last statement), a nested block,
+ * a top-level block, call arguments, a list literal, a return value, loop
+ * and for-clause expressions, an unbraced statement chain, deep blocks and
+ * deep fn declarations. Every one must end in ONE clean "too deeply"
+ * compile error, and the VM must stay usable for the next program. The
+ * shell suite and fuzz tripwires guard these same programs with a
+ * wall-clock timeout, so a regression hangs CI loudly instead of silently
+ * spinning. */
+static void critic_r5(void) {
+    InterpretResult r;
+    char *out, *src;
+    char *p513 = src_parens(513);   /* one level over EXPR_DEPTH_MAX */
+
+    const char *expr_cases[][3] = {
+        /* prefix, guard tripper position, suffix */
+        { "fn f() { let x = ", NULL, "; y; }" },              /* fn body, middle */
+        { "fn f() { y; let x = ", NULL, "; }" },              /* fn body, last */
+        { "fn f() { { let x = ", NULL, "; } print(1); }" },   /* nested block in fn */
+        { "{ let x = ", NULL, "; } print(1);" },              /* top-level block */
+        { "fn g(a) { return a; } fn f() { let x = g(", NULL, "); y; }" }, /* call args */
+        { "fn f() { let xs = [", NULL, "]; y; }" },           /* list literal */
+        { "fn f() { let y = 1; return ", NULL, "; }" },       /* return value */
+        { "fn f() { while (", NULL, ") { } y; }" },           /* while condition */
+        { "fn f() { for (let i = ", NULL, "; i < 3; i = i + 1) { } y; }" }, /* for clause */
+    };
+    for (size_t i = 0; i < sizeof expr_cases / sizeof expr_cases[0]; i++) {
+        size_t cap = strlen(expr_cases[i][0]) + strlen(expr_cases[i][2]) + strlen(p513) + 1;
+        src = malloc(cap);
+        snprintf(src, cap, "%s%s%s", expr_cases[i][0], p513, expr_cases[i][2]);
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_COMPILE_ERROR);
+        OK(strstr(last_err, "expression nested too deeply") != NULL);
+        free(out); free(src);
+        out = run_capture("print(\"alive\");", &r);   /* VM is not wedged */
+        OK(r == INTERPRET_OK && !strcmp(out, "alive\n"));
+        free(out);
+    }
+
+    /* repro B from the review: an error mid-fn-body recovers and terminates */
+    out = run_capture("fn f() { if (true) x257 print(1); print(2); }", &r);
+    OK(r == INTERPRET_COMPILE_ERROR);
+    free(out);
+
+    /* statement chains (unbraced if/while), blocks and fn declarations: the
+     * same termination guarantee for the other three depth guards, each
+     * with a following statement that must not spin */
+    {
+        char chain[260 * 10 + 64];
+        char *w = chain;
+        w += sprintf(w, "fn f() { ");
+        for (int i = 0; i < 260; i++) w += sprintf(w, "if (1) ");
+        w += sprintf(w, "x; print(1); }");
+        out = run_capture(chain, &r);
+        OK(r == INTERPRET_COMPILE_ERROR);
+        OK(strstr(last_err, "statements nested too deeply") != NULL);
+        free(out);
+    }
+    {
+        size_t cap = 2 * 300 + 64;
+        src = malloc(cap);
+        char *w = src;
+        w += sprintf(w, "fn f() { ");
+        for (int i = 0; i < 300; i++) *w++ = '{';
+        for (int i = 0; i < 300; i++) *w++ = '}';
+        sprintf(w, " print(1); }");
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_COMPILE_ERROR);
+        OK(strstr(last_err, "blocks nested too deeply") != NULL);
+        free(out); free(src);
+    }
+    src = src_nested_fns(300);
+    out = run_capture(src, &r);
+    OK(r == INTERPRET_COMPILE_ERROR);
+    OK(strstr(last_err, "functions nested too deeply") != NULL);
+    free(out); free(src);
+    out = run_capture("print(\"alive\");", &r);
+    OK(r == INTERPRET_OK && !strcmp(out, "alive\n"));
+    free(out);
+
+    /* the budget is exact: 512 constructs pass at top level, a call or list
+     * layer costs one level (511 inside), 513 always fails */
+    src = src_parens(511);
+    {   /* one call layer around 511 parens: exactly at the limit */
+        size_t cap = strlen(src) + 64;
+        char *w2 = malloc(cap);
+        snprintf(w2, cap, "fn g(a) { return a; } let r = g(%s); print(r);", src);
+        out = run_capture(w2, &r);
+        OK(r == INTERPRET_OK && !strcmp(out, "7\n"));
+        free(out); free(w2);
+    }
+    free(src);
+
+    /* LOW1: num() has no length cap - it accepts exactly the source-literal
+     * grammar however long, matching the lexer */
+    out = run_capture("print(num(\"123456789012345678901234567890123456789012345\"));", &r);
+    OK(r == INTERPRET_OK && !strcmp(out, "1.2345678901234567e+44\n"));
+    free(out);
+    {
+        char digits[101];
+        memset(digits, '9', 100);
+        digits[100] = '\0';
+        size_t cap = 160;
+        src = malloc(cap);
+        snprintf(src, cap, "print(num(\"%s\"));", digits);
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_OK && !strcmp(out, "1e+100\n"));
+        free(out); free(src);
+    }
+
+    /* num() on bools: true is 1, false is 0 (documented in the README) */
+    out = run_capture("print(num(true), num(false));", &r);
+    OK(r == INTERPRET_OK && !strcmp(out, "1 0\n"));
+    free(out);
+
+    /* print() is variadic: arguments print space-separated */
+    out = run_capture("print(1, \"x\", true, nil);", &r);
+    OK(r == INTERPRET_OK && !strcmp(out, "1 x true nil\n"));
+    free(out);
+
+    /* LOW2: an unterminated string or block comment reports the line where
+     * the construct opened - a trailing newline no longer shifts it, and
+     * multi-line strings anchor at the opening quote */
+    out = run_capture("let u = \"unterminated\n", &r);
+    OK(r == INTERPRET_COMPILE_ERROR && strstr(last_err, "<test>:1: unterminated string") != NULL);
+    free(out);
+    out = run_capture("let a = 1;\nlet u = \"abc", &r);
+    OK(r == INTERPRET_COMPILE_ERROR && strstr(last_err, "<test>:2: unterminated string") != NULL);
+    free(out);
+    out = run_capture("let s = \"a\nb\nc", &r);
+    OK(r == INTERPRET_COMPILE_ERROR && strstr(last_err, "<test>:1: unterminated string") != NULL);
+    free(out);
+    out = run_capture("print(1);\n/* never\nclosed\n", &r);
+    OK(r == INTERPRET_COMPILE_ERROR && strstr(last_err, "<test>:2: unterminated block comment") != NULL);
+    free(out);
+
+    /* LOW3: string concatenation is capped (default 256 MB, documented);
+     * inject a small cap to exercise the check without 512 MB of heap */
+    size_t saved_cap = vm.string_max;
+    vm.string_max = 64;
+    out = run_capture("print(\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" + \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\");", &r);
+    OK(r == INTERPRET_RUNTIME_ERROR);
+    OK(strstr(vm.errbuf, "string too long") != NULL);
+    vm.had_runtime_error = false;
+    free(out);
+    out = run_capture("print(\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" + \"bbbbbbbbbbbbbbbbbbbbbbbb\");", &r);
+    OK(r == INTERPRET_OK);   /* exactly at the cap is allowed */
+    free(out);
+    vm.string_max = saved_cap;
+    out = run_capture("print(\"ok\" + \"!\");", &r);
+    OK(r == INTERPRET_OK && !strcmp(out, "ok!\n"));
+    free(out);
+    free(p513);
+}
+
 int main(void) {
     vm_init(stdout, stderr);
     lexer_basics();
+    critic_r5();
     values_basics();
     table_basics();
     chunk_basics();

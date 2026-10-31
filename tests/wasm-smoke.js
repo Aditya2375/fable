@@ -82,6 +82,13 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
     r = run("print(1 + 1);");
     ok(r.rc === 0 && r.out.includes("2"), "wasm: session survives a compile error");
 
+    /* R5 HIGH1 regression: a depth-guard error inside a function body must
+     * return promptly - pre-fix fable_exec never returned and froze the tab */
+    r = run("fn f() { let x = " + "(".repeat(513) + "7" + ")".repeat(513) + "; y; }");
+    ok(r.rc === 1 && r.err.includes("expression nested too deeply"), "wasm: depth guard in fn body returns");
+    r = run("print(2 + 2);");
+    ok(r.rc === 0 && r.out.includes("4"), "wasm: session survives a depth-guard error");
+
     r = run("print(undefined_variable);");
     ok(r.rc !== 0, "wasm: runtime error reported");
     r = run("print(1 + 1);");

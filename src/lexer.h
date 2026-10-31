@@ -32,9 +32,7 @@ typedef struct {
     const char *cur;
     int line;
     int last_token_line;   /* line of the last real token: anchors EOF errors */
-    Token error;      /* first lex error, sticky */
-    bool failed;
-    bool unterminated_comment;
+    int unterminated_comment_line;   /* line the open block comment started on (0: none) */
 } Lexer;
 
 void lexer_init(Lexer *lx, const char *src);

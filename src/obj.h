@@ -28,6 +28,13 @@ struct ObjString {
     char chars[];      /* NUL-terminated for cheap interop */
 };
 
+/* Concatenation cap: keeps the combined length far below INT_MAX, so the
+ * size math in OP_ADD cannot overflow. Tests inject a small cap through
+ * vm.string_max; this default is the documented limit (README). */
+#ifndef FABLE_STRING_MAX
+#define FABLE_STRING_MAX ((size_t)256 * 1024 * 1024)
+#endif
+
 struct ObjList {
     Obj obj;
     ValueArray items;
