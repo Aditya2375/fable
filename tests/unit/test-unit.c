@@ -4,6 +4,7 @@
 #include "compiler.h"
 #include "lexer.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,7 +38,7 @@ static char *run_capture(const char *src, InterpretResult *res) {
 
 static void lexer_basics(void) {
     Lexer lx;
-    lexer_init(&lx, "let x = 42; # note\nfn");
+    lexer_init(&lx, "let x = 42; # note\nfn", 1);
     OK(lexer_next(&lx).type == T_LET);
     OK(lexer_next(&lx).type == T_IDENT);
     OK(lexer_next(&lx).type == T_EQ);
@@ -47,7 +48,7 @@ static void lexer_basics(void) {
     OK(lexer_next(&lx).type == T_FN);
     OK(lexer_next(&lx).type == T_EOF);
 
-    lexer_init(&lx, "1.5e3 != nil and or not while for if else return true false");
+    lexer_init(&lx, "1.5e3 != nil and or not while for if else return true false", 1);
     OK(lexer_next(&lx).type == T_NUMBER);
     OK(lexer_next(&lx).type == T_BANGEQ);
     OK(lexer_next(&lx).type == T_NIL);
@@ -62,12 +63,12 @@ static void lexer_basics(void) {
     OK(lexer_next(&lx).type == T_TRUE);
     OK(lexer_next(&lx).type == T_FALSE);
 
-    lexer_init(&lx, "\"a\\n\\t\\\"\\\\b\" @");
+    lexer_init(&lx, "\"a\\n\\t\\\"\\\\b\" @", 1);
     Token s = lexer_next(&lx);
     OK(s.type == T_STRING);
     OK(lexer_next(&lx).type == T_ERROR);
 
-    lexer_init(&lx, "\"unclosed");
+    lexer_init(&lx, "\"unclosed", 1);
     OK(lexer_next(&lx).type == T_ERROR);
 }
 
@@ -1064,6 +1065,56 @@ static void critic_r6(void) {
         out = run_capture(src, &r);
         OK(r == INTERPRET_COMPILE_ERROR && strstr(last_err, "too many constants in one chunk") != NULL);
         free(out); free(src);
+    }
+    {   /* round-8 F2: the constant-dedupe hash table keeps exact
+         * values_equal semantics - -0 and 0 share a slot, each NaN literal
+         * gets its own (NaN never equals anything) - and stays correct far
+         * past the linear-scan threshold */
+        Chunk ch;
+        chunk_init(&ch);
+        for (int i = 0; i < 200; i++)
+            OK(chunk_add_constant(&ch, NUM_VAL(i + 0.5)) == i);
+        OK(chunk_add_constant(&ch, NUM_VAL(42.5)) == 42);      /* hashed hit */
+        OK(chunk_add_constant(&ch, NUM_VAL(199.5)) == 199);
+        int z = chunk_add_constant(&ch, NUM_VAL(0));
+        OK(chunk_add_constant(&ch, NUM_VAL(-0.0)) == z);       /* -0 == 0 */
+        OK(chunk_add_constant(&ch, NUM_VAL(9007199254740992.0)) ==
+           chunk_add_constant(&ch, NUM_VAL(9007199254740992.0)));
+        int n1 = chunk_add_constant(&ch, NUM_VAL(NAN));
+        int n2 = chunk_add_constant(&ch, NUM_VAL(NAN));
+        OK(n1 != n2);                                          /* NaN never dedupes */
+        OK(chunk_add_constant(&ch, NUM_VAL(NAN)) == n2 + 1);   /* ...and never matches */
+        chunk_free(&ch);
+    }
+    {   /* round-8 F2: a 60000-distinct-constant program compiles and runs
+         * correctly (the O(n) path; the shell suite guards the wall clock) */
+        size_t cap = 60000 * 10 + 32;
+        src = malloc(cap);
+        char *w = src;
+        w += sprintf(w, "print(0.5");
+        for (int i = 1; i < 60000; i++) w += sprintf(w, " + %d.5", i);
+        w += sprintf(w, ");");
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_OK && !strcmp(out, "1800000000\n"));
+        free(out); free(src);
+    }
+    {   /* round-8 F3: interpret_at numbers errors from first_line (the
+         * REPL passes the absolute input line where its pending statement
+         * began) - "nope" sits on input line 41 here */
+        char *buf = NULL, *ebuf = NULL;
+        size_t cap = 0, ecap = 0;
+        FILE *mem = open_memstream(&buf, &cap);
+        FILE *memerr = open_memstream(&ebuf, &ecap);
+        vm.out = mem;
+        vm.err = memerr;
+        InterpretResult rr = interpret_at("let x = [\nnope];", "<test>", 40);
+        fclose(mem);
+        fclose(memerr);
+        vm.out = stdout;
+        vm.err = stderr;
+        OK(rr == INTERPRET_RUNTIME_ERROR);
+        OK(ebuf && strstr(ebuf, "<test>:41:") != NULL);
+        free(buf); free(ebuf);
     }
     {   /* a loop body over 64 KB of bytecode: "loop body too large";
          * an if body over 64 KB: "jump too far" */

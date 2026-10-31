@@ -4,7 +4,7 @@ fable is a small, complete programming language: a tree-walk-free, bytecode
 interpreter written in C11 with no dependencies beyond libc and libm. It has
 lexically scoped variables, first-class functions, closures with shared
 upvalues, lists, strings, and a mark-sweep garbage collector. The interpreter core is
-2877 lines of C.
+2964 lines of C.
 
 Try it in your browser: **https://aditya2375.github.io/fable/** - the same C
 compiled to WebAssembly, running entirely on your machine.
@@ -129,7 +129,8 @@ unchanged.
 In the terminal REPL, ending input with a bracket, string or comment still
 open is an error (`unexpected end of input`, nonzero exit), and so is a
 NUL byte anywhere in the input (`NUL byte in source`, nonzero exit) - input
-lines themselves can be any length. In the browser
+lines are length-aware, capped only with the accumulated input at 64 KB.
+In the browser
 demo, clicking an example while a line is half-typed discards the partial
 line (and says so) instead of wedging the session.
 
@@ -141,8 +142,10 @@ and cleans up the VM; a script file containing a NUL byte is rejected up front
 (`NUL byte in source file`, naming its line) rather than silently truncated.
 In the REPL a compile or runtime error prints and the session continues, so the
 exit status stays 0; only input that ends with a bracket, string or comment
-still open, a single line over 4094 characters, or accumulated multi-line input
-over 64 KB exits nonzero. `fable script.fable -c "..."` is a usage error
+still open, a NUL byte in the input, or accumulated multi-line input
+over 64 KB exits nonzero. REPL errors name the absolute input line, even when
+the failing text sits inside a multi-line statement (the browser demo numbers
+lines within the current statement). `fable script.fable -c "..."` is a usage error
 (exit 2): give a script or `-c`, not both.
 
 ```
@@ -212,7 +215,8 @@ source → lexer → single-pass Pratt compiler → bytecode → stack VM
   pass - no AST is ever built. Local variables live on the VM stack;
   closures capture locals through upvalues resolved at compile time and
   closed when their scope exits.
-- **Bytecode** (`chunk.c`): a compact instruction set (constants, jumps,
+- **Bytecode** (`chunk.c`): a compact instruction set (constants deduped
+  through a hash table, jumps,
   calls, closures, list/string indexing) with per-instruction line info.
 - **VM** (`vm.c`): a stack machine with a call-frame stack. Globals live in
   an open-addressed hash table.
@@ -227,7 +231,7 @@ byte counter tracks live bytes exactly, so long sessions don't ratchet); `make s
 ## Testing
 
 - `make test` runs everything:
-  - a C unit suite (`tests/unit/test-unit.c`) with **646 checks** covering
+  - a C unit suite (`tests/unit/test-unit.c`) with **855 checks** covering
     the lexer, values, hash table, bytecode chunks, and end-to-end programs
     (closures, recursion, shared upvalues, lists, error paths, IEEE edge
     cases, GC-safety patterns, and every resource limit above);

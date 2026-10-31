@@ -103,6 +103,7 @@ def main():
     args = ap.parse_args()
     rng = random.Random(args.seed)
     fails = 0
+    skipped_big = 0
 
     with tempfile.TemporaryDirectory() as td:
         ff = os.path.join(td, "p.fable")
@@ -119,6 +120,13 @@ def main():
                 continue
             if prc != 0:
                 print(f"note program {i}: generator emitted bad python (skipped)\n{perr}")
+                continue
+            # The oracle is exact integers; fable numbers are doubles. Past
+            # 2^53 a doubling loop leaves the exactly-representable range
+            # (fable rounds, Python does not), so the outputs legitimately
+            # diverge - skip rather than compare (round-8: seed 25).
+            if any(l and abs(int(l)) >= 2**53 for l in pout.split("\n") if l.lstrip("-").isdigit()):
+                skipped_big += 1
                 continue
             # IEEE vs Python ints: fable prints -0 for 0 * -3, Python has no -0.
             norm = lambda t: "\n".join("0" if l == "-0" else l for l in t.split("\n"))
@@ -212,7 +220,8 @@ def main():
     if fails:
         print(f"fuzz: {fails} failures")
         return 1
-    print(f"fuzz: {args.programs} differential programs + {args.blobs} byte blobs passed (seed {args.seed})")
+    big = f", {skipped_big} past the 2^53 oracle (skipped)" if skipped_big else ""
+    print(f"fuzz: {args.programs} differential programs + {args.blobs} byte blobs passed (seed {args.seed}{big})")
     return 0
 
 

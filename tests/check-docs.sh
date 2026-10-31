@@ -34,8 +34,21 @@ src/compiler.c|jump too far|jump too far
 src/compiler.c|loop body too large|loop body too large
 src/main.c|input too long|input too long
 src/main.c|NUL byte in source file|NUL byte
+src/main.c|char pending[65536]|64 KB
+src/main.c|pending_start|absolute input line
 src/obj.h|FABLE_STRING_MAX|256 MB
 "
+# Phrases from removed limits must never come back (round-7 getline REPL:
+# there is no per-line length cap; round-8: dedupe is no longer linear).
+bans="line too long
+4094"
+printf '%s' "$bans" | while read -r phrase; do
+    [ -n "$phrase" ] || continue
+    if grep -qF "$phrase" README.md; then
+        echo "check-docs: README documents a removed limit: $phrase"; exit 1
+    fi
+done || fail=1
+
 printf '%s' "$pins" | while IFS='|' read -r file src_pat doc_pat; do
     [ -n "$file" ] || continue
     if ! grep -qF "$src_pat" "$file"; then

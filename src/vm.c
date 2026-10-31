@@ -645,8 +645,12 @@ rt_fail:
 }
 
 InterpretResult interpret(const char *src, const char *chunk_name) {
+    return interpret_at(src, chunk_name, 1);
+}
+
+InterpretResult interpret_at(const char *src, const char *chunk_name, int first_line) {
     vm.src_name = chunk_name;
-    ObjFunction *fn = compile(src, vm.repl, chunk_name);
+    ObjFunction *fn = compile(src, vm.repl, chunk_name, first_line);
     if (!fn) return INTERPRET_COMPILE_ERROR;
     if (vm.disasm) chunk_disassemble(&fn->chunk, chunk_name, vm.out);
     vm.had_runtime_error = false;

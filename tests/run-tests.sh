@@ -76,12 +76,23 @@ out=$(printf 'print(nope);\nprint("after");\n' | "$BIN" 2>/dev/null) && rc=$? ||
 if [ "$rc" -ne 0 ] || ! printf '%s' "$out" | grep -q after; then
     echo "FAIL cli: REPL must survive a runtime error with exit 0 (rc=$rc: $out)"; cli_fail=1
 fi
+# round-8 F3: REPL errors name the absolute input line, even when the
+# failing text sits inside a multi-line statement
+out=$(printf 'print(111);\nlet x = [\nnope];\n' | "$BIN" 2>&1) && rc=$? || rc=$?
+if ! printf '%s' "$out" | grep -q '<repl>:3: undefined variable'; then
+    echo "FAIL cli: REPL error must name the absolute input line 3 (rc=$rc: $out)"; cli_fail=1
+fi
 # REPL multi-line input over 64 KB: "input too long", nonzero exit
 out=$(awk 'BEGIN{for(i=0;i<17;i++){for(j=0;j<4000;j++)printf "("; printf "\n"}printf ")\n"}' | "$BIN" 2>&1) && rc=$? || rc=$?
 if [ "$rc" -eq 0 ] || ! printf '%s' "$out" | grep -q "input too long"; then
     echo "FAIL cli: over-64KB pending input must error and exit nonzero (rc=$rc: $out)"; cli_fail=1
 fi
-[ "$cli_fail" -eq 0 ] && echo "cli: 13 checks passed" || fail=1
+# the same 64 KB cap applies to one long line (there is no shorter per-line cap)
+out=$(awk 'BEGIN{printf "print(1"; for(i=0;i<33000;i++)printf "+1"; printf ");\n"}' | "$BIN" 2>&1) && rc=$? || rc=$?
+if [ "$rc" -eq 0 ] || ! printf '%s' "$out" | grep -q "input too long"; then
+    echo "FAIL cli: over-64KB single line must error and exit nonzero (rc=$rc: $out)"; cli_fail=1
+fi
+[ "$cli_fail" -eq 0 ] && echo "cli: 15 checks passed" || fail=1
 
 # Depth-guard termination (round-5 HIGH1): a guard firing mid-parse must end
 # in one clean error, in every position - pre-fix these spun at 100% CPU
@@ -118,6 +129,14 @@ term_check "fn f() { for (let i = $deep; i < 3; i = i + 1) { } y; }" "guard in f
 term_check "$chain" "statement-chain guard with following statement"
 term_check "$blocks" "block-nesting guard with following statement"
 term_check "$fns" "fn-nesting guard"
+# round-8 F2: constant dedupe is hash-based - the critic's 65536-distinct-
+# constant compile took ~2.9s pre-fix, milliseconds post-fix; 2s is the guard
+term_count=$((term_count + 1))
+awk 'BEGIN{for(i=0;i<=65535;i++)printf "%d.1;\n", i}' > /tmp/fable-manyconst.fable
+out=$(timeout 2 "$BIN" /tmp/fable-manyconst.fable 2>&1) && rc=$? || rc=$?
+if [ "$rc" -ne 0 ]; then
+    echo "FAIL terminate: 65536 distinct constants must compile well under 2s (rc=$rc)"; term_fail=1
+fi
 [ "$term_fail" -eq 0 ] && echo "terminate: $term_count checks passed" || fail=1
 
 if [ "$fail" -eq 0 ]; then echo "golden: $count cases passed"; fi

@@ -4,11 +4,13 @@
 #include <ctype.h>
 #include <stdbool.h>
 
-void lexer_init(Lexer *lx, const char *src) {
+void lexer_init(Lexer *lx, const char *src, int first_line) {
     lx->start = src;
     lx->cur = src;
-    lx->line = 1;
-    lx->last_token_line = 1;
+    /* first_line lets the REPL report absolute input line numbers even
+     * when the pending buffer holds only the current statement */
+    lx->line = first_line;
+    lx->last_token_line = first_line;
     lx->unterminated_comment_line = 0;
 }
 

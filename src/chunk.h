@@ -49,6 +49,8 @@ typedef struct {
     int count;
     int cap;
     ValueArray constants;
+    int *dedupe;      /* open-addressing: constant index + 1, 0 = empty */
+    int dedupe_cap;   /* power of two; 0 while the chunk is small enough to scan */
 } Chunk;
 
 void chunk_init(Chunk *c);

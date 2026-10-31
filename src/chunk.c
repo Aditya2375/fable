@@ -2,12 +2,14 @@
 #include "obj.h"
 #include "vm.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
 void chunk_init(Chunk *c) {
     c->code = NULL; c->lines = NULL; c->count = 0; c->cap = 0;
     varray_init(&c->constants);
+    c->dedupe = NULL; c->dedupe_cap = 0;
 }
 
 int chunk_write(Chunk *c, uint8_t byte, int line) {
@@ -26,16 +28,88 @@ void chunk_free(Chunk *c) {
     FREE_ARRAY(c->code);
     FREE_ARRAY(c->lines);
     varray_free(&c->constants);
+    FREE_ARRAY(c->dedupe);
     chunk_init(c);
 }
 
-int chunk_add_constant(Chunk *c, Value v) {
-    /* constant dedupe keeps chunks small and OP_EQUAL fast for literals */
+/* Small chunks dedupe constants with a linear scan; past DEDUPE_MIN an
+ * open-addressing hash table (values hashed by type and payload, probed
+ * linearly, load kept under 2/3) keeps literal-heavy programs O(n) to
+ * compile instead of O(n^2). Lookup equality is exactly values_equal:
+ * -0 and 0 are the same constant, a NaN never matches (each NaN literal
+ * gets its own slot and stays out of the table), strings and functions
+ * dedupe by identity (strings are interned, so identity is content). */
+#define DEDUPE_MIN 64
+
+static uint32_t const_hash(Value v) {
+    switch (v.type) {
+        case VAL_NIL:  return 0x9e3779b9u;
+        case VAL_BOOL: return 0x9e3779b9u ^ (AS_BOOL(v) ? 0x85ebca6bu : 0x27d4eb2fu);
+        case VAL_NUM: {
+            double d = AS_NUM(v);
+            if (d == 0) d = 0;              /* -0 and 0 compare equal: one bucket */
+            uint64_t b;
+            memcpy(&b, &d, sizeof b);
+            b ^= b >> 32;
+            return (uint32_t)b * 0x9e3779b1u;
+        }
+        case VAL_OBJ:
+            if (AS_OBJ(v)->type == OBJ_STRING) return AS_STRING(v)->hash;
+            uint64_t p = (uint64_t)(uintptr_t)AS_OBJ(v);   /* functions: identity */
+            p ^= p >> 33;
+            return (uint32_t)(p ^ (p >> 32));
+    }
+    return 0;
+}
+
+static bool dedupe_skipped(Value v) {
+    return IS_NUM(v) && isnan(AS_NUM(v));   /* NaN never equals anything */
+}
+
+static void dedupe_insert(Chunk *c, int idx) {
+    int m = c->dedupe_cap - 1;
+    int i = (int)(const_hash(c->constants.items[idx]) & (uint32_t)m);
+    while (c->dedupe[i]) i = (i + 1) & m;
+    c->dedupe[i] = idx + 1;
+}
+
+static void dedupe_grow(Chunk *c, int ncap) {
+    FREE_ARRAY(c->dedupe);
+    c->dedupe = GROW_ARRAY(int, NULL, ncap);
+    memset(c->dedupe, 0, (size_t)ncap * sizeof(int));
+    c->dedupe_cap = ncap;
     for (int i = 0; i < c->constants.count; i++)
-        if (values_equal(c->constants.items[i], v)) return i;
+        if (!dedupe_skipped(c->constants.items[i])) dedupe_insert(c, i);
+}
+
+int chunk_add_constant(Chunk *c, Value v) {
+    bool tabbed = !dedupe_skipped(v);
+    if (c->dedupe_cap == 0) {
+        if (c->constants.count < DEDUPE_MIN) {
+            for (int i = 0; i < c->constants.count; i++)
+                if (values_equal(c->constants.items[i], v)) return i;
+            tabbed = false;   /* still under the scan threshold: no table yet */
+        } else {
+            dedupe_grow(c, 256);
+        }
+    }
+    if (tabbed) {
+        int m = c->dedupe_cap - 1;
+        int i = (int)(const_hash(v) & (uint32_t)m);
+        while (c->dedupe[i]) {
+            int at = c->dedupe[i] - 1;
+            if (values_equal(c->constants.items[at], v)) return at;
+            i = (i + 1) & m;
+        }
+    }
     vm_push(v);   /* GC: the chunk's array may move it */
     varray_push(&c->constants, v);
     vm_pop();
+    if (tabbed) {
+        if (c->constants.count > (c->dedupe_cap * 2) / 3)
+            dedupe_grow(c, c->dedupe_cap * 2);
+        dedupe_insert(c, c->constants.count - 1);
+    }
     return c->constants.count - 1;
 }
 

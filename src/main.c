@@ -101,6 +101,7 @@ int main(int argc, char **argv) {
         size_t pending_len = 0;
         char pending[65536];
         int repl_line = 0;
+        int pending_start = 1;   /* absolute input line where pending began */
         for (;;) {
             if (interactive) {
                 printf(pending_len ? "... " : "fable> ");
@@ -127,11 +128,12 @@ int main(int argc, char **argv) {
                 rc = 1;
                 continue;
             }
+            if (pending_len == 0) pending_start = repl_line;
             memcpy(pending + pending_len, line, (size_t)nread);
             pending_len += (size_t)nread;
             pending[pending_len] = '\0';   /* no NUL can be inside (checked above) */
             if (!fable_source_complete(pending)) continue;   /* read more lines */
-            interpret(pending, "<repl>");
+            interpret_at(pending, "<repl>", pending_start);
             vm.had_runtime_error = false;
             pending_len = 0;
         }

@@ -55,6 +55,9 @@ extern VM vm;
 void vm_init(FILE *out, FILE *err);
 void vm_free(void);
 InterpretResult interpret(const char *src, const char *chunk_name);
+/* like interpret, but error line numbers start at first_line (the REPL
+ * passes the absolute input line where its pending statement began) */
+InterpretResult interpret_at(const char *src, const char *chunk_name, int first_line);
 
 void vm_push(Value v);
 Value vm_pop(void);

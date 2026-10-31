@@ -734,7 +734,7 @@ static void rules_init(void) {
     rules[T_FN]       = (Rule){ fn_expr, NULL, PREC_NONE };
 }
 
-ObjFunction *compile(const char *src, bool repl_mode, const char *src_name) {
+ObjFunction *compile(const char *src, bool repl_mode, const char *src_name, int first_line) {
     P.src_name = src_name;
     P.expr_depth = 0;
     P.fn_depth = 0;
@@ -742,7 +742,7 @@ ObjFunction *compile(const char *src, bool repl_mode, const char *src_name) {
     P.depth_failed = false;
     static bool rules_ready = false;
     if (!rules_ready) { rules_init(); rules_ready = true; }
-    lexer_init(&P.lx, src);
+    lexer_init(&P.lx, src, first_line);
     P.had_error = false;
     P.panic = false;
     P.compiler = NULL;

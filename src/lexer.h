@@ -35,7 +35,7 @@ typedef struct {
     int unterminated_comment_line;   /* line the open block comment started on (0: none) */
 } Lexer;
 
-void lexer_init(Lexer *lx, const char *src);
+void lexer_init(Lexer *lx, const char *src, int first_line);
 bool fable_source_complete(const char *src);
 Token lexer_next(Lexer *lx);
 const char *token_name(TokenType t);
