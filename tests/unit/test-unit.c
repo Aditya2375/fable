@@ -334,6 +334,100 @@ static void critic_r1(void) {
     free(out);
 }
 
+/* critic round 2 regression tests */
+static void critic_r2(void) {
+    InterpretResult r;
+    char *out, *err;
+
+    /* HIGH1: nested fn declarations are depth-guarded, not a C-stack crash */
+    {
+        char *src = malloc(2048);
+        int off = 0;
+        for (int i = 0; i < 200; i++) off += snprintf(src + off, 2048 - (size_t)off, "fn a(){");
+        for (int i = 0; i < 200; i++) off += snprintf(src + off, 2048 - (size_t)off, "}");
+        (void)off;
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_OK);   /* 200 nested declarations work */
+        free(out); free(src);
+    }
+    {
+        size_t n = 100000;
+        size_t sz = n * 8 + 8;
+        char *src = malloc(sz);
+        int off = 0;
+        for (size_t i = 0; i < n; i++) off += snprintf(src + off, sz - (size_t)off, "fn a(){");
+        for (size_t i = 0; i < n; i++) off += snprintf(src + off, sz - (size_t)off, "}");
+        (void)off;
+        out = run_capture2(src, &r, &err);
+        OK(r == INTERPRET_COMPILE_ERROR);
+        OK(strstr(err, "functions nested too deeply") != NULL);
+        /* LOW4: exactly one error line, no cascade */
+        OK(strchr(err, '\n') != NULL && strchr(strchr(err, '\n') + 1, '\n') == NULL);
+        free(out); free(err); free(src);
+    }
+    /* unbraced statement chains hit their own guard */
+    {
+        char *src = malloc(8192);
+        int off = 0;
+        for (int i = 0; i < 300; i++) off += snprintf(src + off, 8192 - (size_t)off, "if (true) ");
+        snprintf(src + off, 8192 - (size_t)off, "print(1);");
+        out = run_capture2(src, &r, &err);
+        OK(r == INTERPRET_COMPILE_ERROR && strstr(err, "statements nested too deeply") != NULL);
+        free(out); free(err); free(src);
+    }
+
+    /* MED1: REPL echo stays out of unbraced bodies too */
+    vm.repl = true;
+    out = run_capture("let i = 0; while (i < 3) i = i + 1; print(i);", &r);
+    OK(r == INTERPRET_OK && strcmp(out, "3\n") == 0);
+    free(out);
+    out = run_capture("if (true) 42;", &r);
+    OK(r == INTERPRET_OK && strcmp(out, "") == 0);
+    free(out);
+    out = run_capture("if (false) 42; else 43;", &r);
+    OK(r == INTERPRET_OK && strcmp(out, "") == 0);
+    free(out);
+    out = run_capture("if (true) if (true) 42;", &r);
+    OK(r == INTERPRET_OK && strcmp(out, "") == 0);
+    free(out);
+    out = run_capture("for (let i = 0; i < 3; i = i + 1) i * 10;", &r);
+    OK(r == INTERPRET_OK && strcmp(out, "") == 0);
+    free(out);
+    out = run_capture("42;", &r);
+    OK(r == INTERPRET_OK && strcmp(out, "42\n") == 0);   /* top level still echoes */
+    free(out);
+    vm.repl = false;
+
+    /* LOW1: fractional string index gets the list-style message */
+    out = run_capture2("print(\"ab\"[1.5]);", &r, &err);
+    OK(r == INTERPRET_RUNTIME_ERROR && strstr(err, "string index 1.5 out of range (len 2)") != NULL);
+    free(out); free(err);
+
+    /* LOW3: deep-recursion traces are capped */
+    out = run_capture2("fn f(n) { if (n == 0) { return 0; } return f(n - 1) + 1; } print(f(5000));", &r, &err);
+    OK(r == INTERPRET_RUNTIME_ERROR && strstr(err, "more frames") != NULL);
+    {
+        int lines = 0;
+        for (char *p = err; *p; p++) if (*p == '\n') lines++;
+        OK(lines < 20);
+    }
+    free(out); free(err);
+
+    /* LOW5: num() is strict */
+    out = run_capture2("print(num(\" 12\"));", &r, &err);
+    OK(r == INTERPRET_RUNTIME_ERROR && strstr(err, "not a number") != NULL);
+    free(out); free(err);
+    out = run_capture2("print(num(\"0x10\"));", &r, &err);
+    OK(r == INTERPRET_RUNTIME_ERROR && strstr(err, "not a number") != NULL);
+    free(out); free(err);
+    out = run_capture2("print(num(\"12 \"));", &r, &err);
+    OK(r == INTERPRET_RUNTIME_ERROR && strstr(err, "not a number") != NULL);
+    free(out); free(err);
+    out = run_capture("print(num(\"12\")); print(num(\"inf\")); print(num(\"-0\")); print(num(\"1e3\"));", &r);
+    OK(r == INTERPRET_OK && strcmp(out, "12\ninf\n-0\n1000\n") == 0);
+    free(out);
+}
+
 static void repl_echo(void) {
     /* REPL mode echoes expression statements, but nil stays silent so
      * print() calls don't trail a nil. */
@@ -497,6 +591,7 @@ int main(void) {
     values_basics();
     table_basics();
     chunk_basics();
+    critic_r2();
     critic_r1();
     repl_echo();
     end_to_end();

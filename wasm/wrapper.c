@@ -35,6 +35,16 @@ static void pending_clear(void) {
 EMSCRIPTEN_KEEPALIVE
 void fable_set_echo(int on) { vm.repl = on != 0; }
 
+/* Drop any half-typed multi-line input. Returns 1 if something was pending,
+ * so the page can say what happened. Example buttons call this first:
+ * running a program must not wedge the session on an old incomplete line. */
+EMSCRIPTEN_KEEPALIVE
+int fable_discard_pending(void) {
+    int had = pending != NULL;
+    pending_clear();
+    return had;
+}
+
 EMSCRIPTEN_KEEPALIVE
 int fable_exec(const char *src) {
     size_t n = strlen(src);

@@ -44,6 +44,8 @@ typedef struct {
     const char *src_name;
     int expr_depth;   /* guards C-stack recursion in parse_precedence */
     int fn_depth;     /* guards C-stack recursion in nested fn bodies */
+    int stmt_depth;   /* statement nesting: echo gate + recursion guard */
+    bool depth_failed; /* a depth guard fired: stop parsing, no error cascade */
 } Parser;
 
 static Parser P;
@@ -80,6 +82,7 @@ static bool match(TokenType t) { if (!check(t)) return false; advance(); return 
 
 static void consume(TokenType t, const char *fmt, ...) {
     if (P.cur.type == t) { advance(); return; }
+    if (P.depth_failed) return;   /* unwinding after a depth guard: stay quiet */
     va_list ap; va_start(ap, fmt);
     char msg[256];
     vsnprintf(msg, sizeof msg, fmt, ap);
@@ -151,11 +154,27 @@ static ObjFunction *compiler_end(void) {
 }
 
 /* ---- scope + locals ---- */
+#define EXPR_DEPTH_MAX 512   /* deeper nesting is a compile error, not a crash */
+#define FN_DEPTH_MAX 256
+#define STMT_DEPTH_MAX 256
 #define SCOPE_DEPTH_MAX 256
+
+/* Depth guards report once, then stop the parse: no cascade of secondary
+ * errors from half-consumed tokens. */
+static void depth_error(const char *fmt, ...) {
+    if (P.depth_failed) return;
+    P.depth_failed = true;
+    va_list ap; va_start(ap, fmt);
+    char msg[160];
+    vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    error_at(&P.prev, "%s", msg);
+}
+
 static void begin_scope(void) {
     P.compiler->scope_depth++;
     if (P.compiler->scope_depth > SCOPE_DEPTH_MAX)
-        error_at(&P.prev, "blocks nested too deeply (limit %d)", SCOPE_DEPTH_MAX);
+        depth_error("blocks nested too deeply (limit %d)", SCOPE_DEPTH_MAX);
 }
 static void end_scope(void) {
     P.compiler->scope_depth--;
@@ -237,6 +256,7 @@ static void define_local(void) {
 static void named_variable(Token name, bool can_assign);
 static void expression(void);
 static void statement(void);
+static void nested_statement(void);
 static void declaration(void);
 
 /* ---- Pratt table ---- */
@@ -257,12 +277,10 @@ typedef struct {
 static Rule rules[T_EOF + 1];
 static Rule *rule(TokenType t) { return &rules[t]; }
 
-#define EXPR_DEPTH_MAX 512   /* deeper nesting is a compile error, not a crash */
-#define FN_DEPTH_MAX 128
 
 static void parse_precedence(Precedence prec) {
     if (P.expr_depth >= EXPR_DEPTH_MAX) {
-        error_at(&P.prev, "expression nested too deeply (limit %d)", EXPR_DEPTH_MAX);
+        depth_error("expression nested too deeply (limit %d)", EXPR_DEPTH_MAX);
         return;
     }
     P.expr_depth++;
@@ -459,6 +477,18 @@ static void index_op(bool can_assign) {
 
 /* ---- functions ---- */
 static void function_body(FnKind kind, Token name_tok) {
+    if (P.fn_depth >= FN_DEPTH_MAX) {
+        depth_error("functions nested too deeply (limit %d)", FN_DEPTH_MAX);
+        /* skip the body so parsing can wind down cleanly */
+        int depth = 0;
+        while (!check(T_EOF)) {
+            advance();
+            if (P.prev.type == T_LBRACE) depth++;
+            else if (P.prev.type == T_RBRACE && --depth == 0) break;
+        }
+        return;
+    }
+    P.fn_depth++;
     Compiler c;
     compiler_init(&c, kind);
     P.compiler->fn->name = kind == FN_SCRIPT ? NULL
@@ -505,8 +535,8 @@ static void expr_statement(void) {
     expression();
     consume(T_SEMICOLON, "expected ';' after expression");
     /* REPL echo is only for statements typed at the prompt's top level;
-     * inside functions, loops and blocks nothing echoes */
-    bool echo = P.repl_mode && P.compiler->kind == FN_SCRIPT && P.compiler->scope_depth == 0;
+     * inside functions, loops, blocks and unbraced bodies nothing echoes */
+    bool echo = P.repl_mode && P.compiler->kind == FN_SCRIPT && P.stmt_depth == 0;
     emit(echo ? OP_PRINT_POP : OP_POP);
 }
 
@@ -529,11 +559,11 @@ static void if_statement(void) {
     consume(T_RPAREN, "expected ')' after the condition");
     int else_j = emit_jump(OP_JUMP_IF_FALSE);
     emit(OP_POP);                    /* condition was true: discard it */
-    statement();
+    nested_statement();
     int end_j = emit_jump(OP_JUMP);
     patch_jump(else_j);
     emit(OP_POP);                    /* condition was false: discard it */
-    if (match(T_ELSE)) statement();
+    if (match(T_ELSE)) nested_statement();
     patch_jump(end_j);
 }
 
@@ -544,7 +574,7 @@ static void while_statement(void) {
     consume(T_RPAREN, "expected ')' after the condition");
     int exit_j = emit_jump(OP_JUMP_IF_FALSE);
     emit(OP_POP);
-    statement();
+    nested_statement();
     emit_loop(loop_start);
     patch_jump(exit_j);
     emit(OP_POP);
@@ -587,7 +617,7 @@ static void for_statement(void) {
     } else {
         consume(T_RPAREN, "expected ')' after the for clauses");
     }
-    statement();
+    nested_statement();
     emit_loop(loop_start);
     if (exit_j != -1) { patch_jump(exit_j); emit(OP_POP); }
     end_scope();
@@ -608,7 +638,9 @@ static void return_statement(void) {
 }
 
 static void block(void) {
-    while (!check(T_RBRACE) && !check(T_EOF)) declaration();
+    P.stmt_depth++;
+    while (!check(T_RBRACE) && !check(T_EOF) && !P.depth_failed) declaration();
+    P.stmt_depth--;
     consume(T_RBRACE, "expected '}' after the block");
 }
 
@@ -624,12 +656,26 @@ static void fn_declaration(void) {
 }
 
 static void statement(void) {
+    if (P.depth_failed) return;
     if (match(T_IF)) if_statement();
     else if (match(T_WHILE)) while_statement();
     else if (match(T_FOR)) for_statement();
     else if (match(T_RETURN)) return_statement();
     else if (match(T_LBRACE)) { begin_scope(); block(); end_scope(); }
     else expr_statement();
+}
+
+/* Bodies of if/while/for and block contents are nested statements: they
+ * never echo in the REPL, and their nesting depth is capped so unbraced
+ * chains (if (x) if (x) if (x) ...) cannot smash the C stack. */
+static void nested_statement(void) {
+    if (P.stmt_depth >= STMT_DEPTH_MAX) {
+        depth_error("statements nested too deeply (limit %d)", STMT_DEPTH_MAX);
+        return;
+    }
+    P.stmt_depth++;
+    statement();
+    P.stmt_depth--;
 }
 
 static void synchronize(void) {
@@ -646,6 +692,7 @@ static void synchronize(void) {
 }
 
 static void declaration(void) {
+    if (P.depth_failed) return;
     if (match(T_LET)) var_declaration();
     else if (match(T_FN)) fn_declaration();
     else statement();
@@ -685,6 +732,8 @@ ObjFunction *compile(const char *src, bool repl_mode, const char *src_name) {
     P.src_name = src_name;
     P.expr_depth = 0;
     P.fn_depth = 0;
+    P.stmt_depth = 0;
+    P.depth_failed = false;
     static bool rules_ready = false;
     if (!rules_ready) { rules_init(); rules_ready = true; }
     lexer_init(&P.lx, src);
@@ -695,7 +744,10 @@ ObjFunction *compile(const char *src, bool repl_mode, const char *src_name) {
     Compiler c;
     compiler_init(&c, FN_SCRIPT);
     advance();
-    while (!match(T_EOF)) declaration();
+    while (!match(T_EOF)) {
+        if (P.depth_failed) break;   /* guard fired: stop, do not spin */
+        declaration();
+    }
     ObjFunction *fn = compiler_end();
     return P.had_error ? NULL : fn;
 }

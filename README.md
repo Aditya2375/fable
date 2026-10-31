@@ -4,7 +4,7 @@ fable is a small, complete programming language: a tree-walk-free, bytecode
 interpreter written in C11 with no dependencies beyond libc and libm. It has
 lexically scoped variables, first-class functions, closures with shared
 upvalues, lists, strings, and a mark-sweep garbage collector. The interpreter core is
-2687 lines of C.
+2775 lines of C.
 
 Try it in your browser: **https://aditya2375.github.io/fable/** - the same C
 compiled to WebAssembly, running entirely on your machine.
@@ -116,6 +116,15 @@ continues on the next line with a `... ` prompt.
 
 `str(list)` renders a list exactly the way `print` would, cycles included.
 
+`num()` is strict: it accepts decimal numbers (`-12.5e3`) and the exact
+words `inf`/`nan` (so `num(str(x))` round-trips), and rejects whitespace,
+hex, empty strings and trailing garbage.
+
+In the terminal REPL, ending input with a bracket, string or comment still
+open is an error (`unexpected end of input`, nonzero exit). In the browser
+demo, clicking an example while a line is half-typed discards the partial
+line (and says so) instead of wedging the session.
+
 ## Errors
 
 Compile errors report the line and a caret-free excerpt; runtime errors print
@@ -139,9 +148,11 @@ fable is deliberately small. It does **not** have:
 - a standard library beyond the built-ins above
 - tail-call optimization
 
-Resource limits, all enforced with clean errors rather than crashes: call
-depth is capped at 1024 frames (65536 stack values); expressions nest at
-most 512 levels, blocks 256, function definitions 128; list printing detects
+Resource limits, each enforced with a clean error (never a crash) and each
+covered by a unit test: call depth is capped at 1024 frames (65536 stack
+values, `stack overflow` past that, traces capped at 12 frames plus a
+`... N more frames` summary); expressions nest at most 512 levels, blocks
+256, statement chains 256, function definitions 256; list printing detects
 cycles (`[[...]]`) and caps nesting at 64 levels (`...`).
 
 Named function *expressions* (`let f = fn g() {...}`) bind only `f`; the inner
@@ -178,7 +189,7 @@ source → lexer → single-pass Pratt compiler → bytecode → stack VM
 ## Testing
 
 - `make test` runs everything:
-  - a C unit suite (`tests/unit/test-unit.c`) with **518 checks** covering
+  - a C unit suite (`tests/unit/test-unit.c`) with **536 checks** covering
     the lexer, values, hash table, bytecode chunks, and end-to-end programs
     (closures, recursion, shared upvalues, lists, error paths, IEEE edge
     cases, GC-safety patterns, and every resource limit above);

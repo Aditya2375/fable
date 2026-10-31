@@ -73,8 +73,10 @@ void runtime_error(const char *fmt, ...) {
     vm.had_runtime_error = true;
 }
 
+#define TRACE_MAX 12   /* deepest frames shown before the summary line */
 static void print_trace(void) {
-    for (int i = vm.frame_count - 1; i >= 0; i--) {
+    int shown = vm.frame_count < TRACE_MAX ? vm.frame_count : TRACE_MAX;
+    for (int i = vm.frame_count - 1; i >= vm.frame_count - shown; i--) {
         CallFrame *f = &vm.frames[i];
         ObjFunction *fn = f->closure->fn;
         long ipoff = (long)(f->ip - fn->chunk.code) - 1;
@@ -84,6 +86,9 @@ static void print_trace(void) {
         else
             fprintf(vm.err, "  in script, line %d\n", line);
     }
+    if (vm.frame_count > shown)
+        fprintf(vm.err, "  ... %d more frame%s\n", vm.frame_count - shown,
+                vm.frame_count - shown == 1 ? "" : "s");
 }
 
 /* ---- natives ---- */
@@ -533,7 +538,10 @@ static InterpretResult run(void) {
                     ObjString *s = AS_STRING(seq);
                     if (!IS_NUM(idx)) goto bad_index_type;
                     double d = AS_NUM(idx);
-                    if (d != floor(d) || isnan(d)) goto bad_index_type;
+                    if (d != floor(d) || isnan(d)) {
+                        runtime_error("string index %s out of range (len %d)", fmt_num(d), s->len);
+                        goto rt_fail;
+                    }
                     if (d > 2147483647.0 || d < -2147483648.0) {
                         runtime_error("string index %s out of range (len %d)", fmt_num(d), s->len);
                         goto rt_fail;

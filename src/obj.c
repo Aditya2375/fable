@@ -130,14 +130,36 @@ ObjString *string_of_double(double v) {
 }
 
 bool double_of_string(const char *s, int len, double *out) {
-    if (len == 0 || len > 30) return false;
-    char buf[31];
+    /* strict grammar: no whitespace, no hex, no trailing garbage. Accepts
+     * [-]digits[.digits][(e|E)[+|-]digits] plus the exact words inf and nan
+     * (so num(str(x)) round-trips for every double). */
+    if (len == 0 || len > 40) return false;
+    if ((len == 3 && memcmp(s, "inf", 3) == 0) || (len == 4 && memcmp(s, "-inf", 4) == 0) ||
+        (len == 3 && memcmp(s, "nan", 3) == 0) || (len == 4 && memcmp(s, "-nan", 4) == 0)) {
+        *out = s[0] == '-' ? -(s[1] == 'i' ? INFINITY : NAN) : (s[0] == 'i' ? INFINITY : NAN);
+        return true;
+    }
+    int i = 0;
+    if (s[i] == '-' || s[i] == '+') i++;
+    int digits = 0;
+    while (i < len && s[i] >= '0' && s[i] <= '9') { i++; digits++; }
+    if (i < len && s[i] == '.') {
+        i++;
+        while (i < len && s[i] >= '0' && s[i] <= '9') { i++; digits++; }
+    }
+    if (digits == 0) return false;
+    if (i < len && (s[i] == 'e' || s[i] == 'E')) {
+        i++;
+        if (i < len && (s[i] == '-' || s[i] == '+')) i++;
+        int edigits = 0;
+        while (i < len && s[i] >= '0' && s[i] <= '9') { i++; edigits++; }
+        if (edigits == 0) return false;
+    }
+    if (i != len) return false;
+    char buf[41];
     memcpy(buf, s, (size_t)len);
     buf[len] = '\0';
-    char *end;
-    double v = strtod(buf, &end);
-    if (end != buf + len) return false;
-    *out = v;
+    *out = strtod(buf, NULL);
     return true;
 }
 

@@ -47,6 +47,14 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
     ok(r.out === "1\n2\nfizz\n4\nbuzz\nfizz\n7\n8\nfizz\nbuzz\n11\nfizz\n13\n14\nfizzbuzz\n", "wasm: fizzbuzz example exact output");
     m.ccall("fable_set_echo", null, ["number"], [1]);
 
+    /* MED2 regression: an example button must unwedge a pending line */
+    let wedge = run("fn half() {");
+    ok(wedge.rc === 2, "wasm: half-typed fn is pending");
+    ok(m.ccall("fable_discard_pending", "number", [], []) === 1, "wasm: discard reports pending input");
+    ok(m.ccall("fable_discard_pending", "number", [], []) === 0, "wasm: discard is quiet when nothing pending");
+    r = run("print(6 * 7);");
+    ok(r.rc === 0 && r.out === "42\n", "wasm: session works right after a discard");
+
     /* MED9: multi-line input accumulates across exec calls */
     let rc2 = run("fn seven() {");
     ok(rc2.rc === 2 && rc2.out.includes("..."), "wasm: incomplete input asks for more lines");

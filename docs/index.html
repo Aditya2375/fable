@@ -48,7 +48,7 @@
   their value, like the terminal REPL; a line that leaves a bracket open
   continues on the next line ("...").</p>
 </main>
-<script src="fable.js?v=3"></script>
+<script src="fable.js?v=4"></script>
 <script>
 const out = document.getElementById('out');
 const inp = document.getElementById('in');
@@ -89,6 +89,8 @@ function runProgram(name){
     printCmd('fable> <session reset>');
     return;
   }
+  const discarded = M.ccall('fable_discard_pending', 'number', [], []);
+  if (discarded) print('(discarded incomplete input)');
   const src = programs[name];
   const chunks = Array.isArray(src) ? src : [src];
   setEcho(false);   /* whole programs print only what they print() */

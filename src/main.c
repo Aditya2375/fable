@@ -75,7 +75,13 @@ int main(int argc, char **argv) {
                 printf(pending[0] ? "... " : "fable> ");
                 fflush(stdout);
             }
-            if (!fgets(line, sizeof line, stdin)) break;
+            if (!fgets(line, sizeof line, stdin)) {
+                if (pending[0]) {
+                    fprintf(stderr, "<repl>: unexpected end of input (unclosed bracket, string or comment)\n");
+                    rc = 1;
+                }
+                break;
+            }
             if (!strchr(line, '\n') && !feof(stdin)) {
                 int ch; while ((ch = getchar()) != '\n' && ch != EOF) {}
                 fprintf(stderr, "line too long\n");
