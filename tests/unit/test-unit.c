@@ -328,6 +328,16 @@ static void critic_r1(void) {
     OK(strcmp(out, "0.30000000000000004\n0.6666666666666666\n") == 0);
     free(out);
 
+    /* round-7 F3: integral values with magnitude at most 2^53 print as
+     * plain integers (the critic's case was 1694577218885960); every
+     * printed form still round-trips through num(str(x)) */
+    out = run_capture("print(1694577218885960); print(-1694577218885960); print(999999999999999); print(1000000000000000); print(9007199254740992);", &r);
+    OK(strcmp(out, "1694577218885960\n-1694577218885960\n999999999999999\n1000000000000000\n9007199254740992\n") == 0);
+    free(out);
+    out = run_capture("print(num(str(1694577218885960)) == 1694577218885960); print(num(str(9007199254740992)) == 9007199254740992); print(num(str(9007199254740994)) == 9007199254740994); print(num(str(1e20)) == 1e20);", &r);
+    OK(strcmp(out, "true\ntrue\ntrue\ntrue\n") == 0);
+    free(out);
+
     /* LOW20: str(list) renders exactly like print(list) */
     out = run_capture("print(str([1, \"a\", 2.5, true, nil]));", &r);
     OK(strcmp(out, "[1, \"a\", 2.5, true, nil]\n") == 0);
@@ -599,6 +609,21 @@ static char *src_with_nils(const char *prefix, int nils, const char *suffix) {
     return s;
 }
 
+/* "fill(F)" fills the value stack to a chosen depth: every fill() frame
+ * holds callee + arg + 151 locals = 153 slots, so after the script closure
+ * F frames leave top = 1 + 153*F and the leaf call adds callee + arg = 2
+ * more; leaf_locals lets then set the exact top before leaf_tail runs. */
+static char *src_fullstack(int frames, int leaf_locals, const char *leaf_tail) {
+    size_t cap = 256 + (size_t)(151 + leaf_locals + 4) * 18 + strlen(leaf_tail);
+    char *s = malloc(cap), *w = s;
+    w += sprintf(w, "fn fill(n) {\n if (n > 0) {\n");
+    for (int i = 0; i < 151; i++) w += sprintf(w, "  let a%d = 0;\n", i);
+    w += sprintf(w, "  fill(n - 1);\n } else {\n");
+    for (int i = 0; i < leaf_locals; i++) w += sprintf(w, "  let b%d = 0;\n", i);
+    w += sprintf(w, "  %s\n }\n}\nfill(%d);", leaf_tail, frames);
+    return s;
+}
+
 /* Build "<open>"*depth + "1" + "<close>"*depth + ";" */
 static char *src_nested(const char *open, const char *close, int depth) {
     size_t cap = (size_t)depth * (strlen(open) + strlen(close)) + 8;
@@ -614,37 +639,44 @@ static void critic_r3(void) {
     InterpretResult r;
     char *out, *src;
 
-    /* Round-3 HIGH: shield pushes on an exactly-full value stack (65536)
-     * must stop execution before any further allocation touches the
-     * unrooted object. Each case must fail with one clean stack-overflow
-     * error; under GC stress + ASan these were heap-use-after-frees. */
-    struct { const char *name; const char *prefix; int nils; const char *suffix; } full[] = {
-        /* OP_BUILD_LIST: script closure (1 slot) + 65535 elements */
-        { "list-build", "let x = [", 65535, "];" },
-        /* OP_ADD concat: 1 + 65533 elements + 2 list operands */
-        { "list-concat", "[", 65533, ", [1] + [2]];" },
-        /* push(): 1 + 65532 elements + callee + 2 args */
-        { "native-push", "[", 65532, ", push([1], 2)];" },
+    /* Round-3 HIGH (rebased round-7 F1): shield pushes on an exactly-full
+     * value stack (65536 values) must stop execution before any further
+     * allocation touches the unrooted object. List literals now build
+     * incrementally (constant stack use at any length), so the stack is
+     * filled with frames instead: each fill() frame holds callee + arg +
+     * 151 locals = 153 slots, so the script closure plus 427 frames leaves
+     * top = 65332 and the leaf frame's callee + arg make 65334; leaf
+     * locals then set the exact pre-op top. Each case must fail with one
+     * clean stack-overflow error; under GC stress + ASan the pre-fix
+     * versions were heap-use-after-frees. */
+    struct { const char *name; int leaf_locals; const char *tail; } full[] = {
+        /* OP_BUILD_LIST: top 65536, the list's own push overflows */
+        { "list-build", 202, "let x = [];" },
+        /* OP_ADD concat: two empty lists fill 65536, the concat shield overflows */
+        { "list-concat", 200, "let x = [] + [];" },
+        /* push(): the callee fills 65536, the [] build overflows */
+        { "native-push", 201, "let x = push([], 1);" },
+        /* OP_CLOSURE: local q fills 65536, the closure shield overflows
+         * before capture_upvalue allocates */
+        { "closure", 201, "let q = 1; let f = fn() { return q; };" },
     };
-    for (int i = 0; i < 3; i++) {
-        src = src_with_nils(full[i].prefix, full[i].nils, full[i].suffix);
+    for (int i = 0; i < 4; i++) {
+        src = src_fullstack(427, full[i].leaf_locals, full[i].tail);
         out = run_capture(src, &r);
         OK(r == INTERPRET_RUNTIME_ERROR);           /* full stack: clean error */
         OK(strstr(vm.errbuf, "stack overflow") != NULL);
         free(out); free(src);
     }
-    /* OP_CLOSURE: script + outer frame + local + 65533 elements = full */
-    src = src_with_nils("fn outer() { let z = 1; return [", 65533,
-                        ", fn() { return z; }]; }\nouter();");
+    /* one slot below full the same build runs fine (65536th value fits) */
+    src = src_fullstack(427, 201, "let x = [];");
     out = run_capture(src, &r);
-    OK(r == INTERPRET_RUNTIME_ERROR);
-    OK(strstr(vm.errbuf, "stack overflow") != NULL);
+    OK(r == INTERPRET_OK);
     free(out); free(src);
-
-    /* one below the cap the same shapes must run fine */
-    src = src_with_nils("let x = [", 65534, "]; print(len(x));");
+    /* with frame headroom: push() and concat allocate (GC-stress
+     * collected) and a print still fits */
+    src = src_fullstack(426, 202, "let x = push([], 1); let y = [1, 2] + [3]; print(len(y));");
     out = run_capture(src, &r);
-    OK(r == INTERPRET_OK && !strcmp(out, "65534\n"));
+    OK(r == INTERPRET_OK && !strcmp(out, "3\n"));
     free(out); free(src);
 
     /* Round-3 F5: source ending inside a comment with open brackets is
@@ -1005,10 +1037,18 @@ static void critic_r6(void) {
         OK(strstr(last_err, "too many local variables") == NULL);
         free(out); free(src);
     }
-    {   /* a 65536-element list literal: "list literal too long" */
-        src = src_with_nils("let x = [", 65536, "];");
+    {   /* round-7 F1: list literals have no element-count cap - they build
+         * incrementally, two stack slots at any length, so even 100k
+         * elements run at the top level and inside a call */
+        /* block scope: the list must be collectable afterwards so r4's
+         * live-byte accounting does not see it */
+        src = src_with_nils("{ let x = [", 65536, "]; print(len(x)); }");
         out = run_capture(src, &r);
-        OK(r == INTERPRET_COMPILE_ERROR && strstr(last_err, "list literal too long") != NULL);
+        OK(r == INTERPRET_OK && !strcmp(out, "65536\n"));
+        free(out); free(src);
+        src = src_with_nils("fn f() { return [", 100000, "]; } print(len(f()));");
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_OK && !strcmp(out, "100000\n"));
         free(out); free(src);
     }
     {   /* 65537 constants in one chunk: "too many constants in one chunk".

@@ -4,7 +4,7 @@ fable is a small, complete programming language: a tree-walk-free, bytecode
 interpreter written in C11 with no dependencies beyond libc and libm. It has
 lexically scoped variables, first-class functions, closures with shared
 upvalues, lists, strings, and a mark-sweep garbage collector. The interpreter core is
-2865 lines of C.
+2877 lines of C.
 
 Try it in your browser: **https://aditya2375.github.io/fable/** - the same C
 compiled to WebAssembly, running entirely on your machine.
@@ -128,7 +128,8 @@ unchanged.
 
 In the terminal REPL, ending input with a bracket, string or comment still
 open is an error (`unexpected end of input`, nonzero exit), and so is a
-single input line over 4094 characters (`line too long`, nonzero exit). In the browser
+NUL byte anywhere in the input (`NUL byte in source`, nonzero exit) - input
+lines themselves can be any length. In the browser
 demo, clicking an example while a line is half-typed discards the partial
 line (and says so) instead of wedging the session.
 
@@ -174,14 +175,14 @@ statement chains 256,
 function definitions 256; a function takes at most 255 parameters and
 scopes at most 255 locals (a frame has 256 slots; slot 0 is the function
 itself), a closure captures at most 256 upvalues, and a call passes at
-most 255 arguments; a list literal holds at most 65535 elements and one
-chunk at most 65536 constants; a jump spans at most 64 KB of bytecode
+most 255 arguments; a list literal is built element by element, so its
+size is bounded by memory, not the stack, and has no element-count cap; one
+chunk holds at most 65536 constants; a jump spans at most 64 KB of bytecode
 (`jump too far` forward, `loop body too large` backward); string
 concatenation caps the result at 256 MB
 (`string too long` past that); list printing detects
-cycles (`[[...]]`) and caps nesting at 64 levels (`...`). In the REPL, one
-input line is capped at 4094 characters (`line too long`) and accumulated
-multi-line input at 64 KB (`input too long`). After any depth
+cycles (`[[...]]`) and caps nesting at 64 levels (`...`). In the REPL,
+accumulated multi-line input is capped at 64 KB (`input too long`). After any depth
 guard fires, parsing stops with that one error - every parse loop exits
 instead of spinning, and no further diagnostics (including lexer errors in
 the remaining input) are emitted (regression-tested with a 10-second
@@ -193,7 +194,9 @@ name is display metadata, not a self-reference. Use a `fn` declaration or a
 `let` binding for recursion.
 
 Numbers are doubles, so integers above 2^53 lose precision, as in JavaScript.
-Printing uses the shortest form that round-trips: `num(str(x))` is
+Integral values with magnitude at most 2^53 print as plain integers
+(`1694577218885960`, not `1.69457721888596e+15`); every other value prints
+in the shortest form that round-trips: `num(str(x))` is
 bit-identical to `x` for every number except `nan` (IEEE: `nan != nan`),
 `-0` keeps its sign, and `nan`/`inf`/`-inf` print as words.
 
@@ -224,7 +227,7 @@ byte counter tracks live bytes exactly, so long sessions don't ratchet); `make s
 ## Testing
 
 - `make test` runs everything:
-  - a C unit suite (`tests/unit/test-unit.c`) with **642 checks** covering
+  - a C unit suite (`tests/unit/test-unit.c`) with **646 checks** covering
     the lexer, values, hash table, bytecode chunks, and end-to-end programs
     (closures, recursion, shared upvalues, lists, error paths, IEEE edge
     cases, GC-safety patterns, and every resource limit above);
@@ -238,8 +241,8 @@ byte counter tracks live bytes exactly, so long sessions don't ratchet); `make s
 - `python3 tests/fuzz.py` generates random integer-arithmetic programs and
   diffs fable's output against python3 (200 programs and 100 byte blobs by
   default; the blobs are random bytes that must never crash the
-  interpreter). CI runs 300 programs + 100 byte blobs, plus 50 programs +
-  300 byte blobs under the sanitizers.
+  interpreter). CI runs 100 programs + 60 byte blobs across nine seeds,
+  plus 50 programs + 300 byte blobs under the sanitizers.
 
 The CI workflow runs the unit, golden, sanitizer, GC-stress, and fuzz suites
 plus a WebAssembly build on every push.

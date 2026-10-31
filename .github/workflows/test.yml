@@ -31,8 +31,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: make
-      - name: differential fuzz vs python3
-        run: python3 tests/fuzz.py --programs 300 --blobs 100
+      - name: differential fuzz vs python3 (several seeds)
+        run: |
+          for seed in 1 2 3 4 5 6 7 8 20261101; do
+            python3 tests/fuzz.py --programs 100 --blobs 60 --seed "$seed"
+          done
       - name: byte fuzz under sanitizers
         run: |
           make clean

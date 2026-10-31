@@ -93,40 +93,49 @@ int main(int argc, char **argv) {
          * next line with a "... " prompt */
         vm.repl = true;
         int interactive = isatty(0);
-        char line[4096];
+        /* getline(): any line length works, and the returned byte count
+         * makes NUL bytes detectable - a NUL must never silently truncate
+         * the rest of the input the way a C-string read would */
+        char *line = NULL;
+        size_t line_cap = 0;
+        size_t pending_len = 0;
         char pending[65536];
-        pending[0] = '\0';
+        int repl_line = 0;
         for (;;) {
             if (interactive) {
-                printf(pending[0] ? "... " : "fable> ");
+                printf(pending_len ? "... " : "fable> ");
                 fflush(stdout);
             }
-            if (!fgets(line, sizeof line, stdin)) {
-                if (pending[0]) {
+            ssize_t nread = getline(&line, &line_cap, stdin);
+            if (nread < 0) {
+                if (pending_len) {
                     fprintf(stderr, "<repl>: unexpected end of input (unclosed bracket, string or comment)\n");
                     rc = 1;
                 }
                 break;
             }
-            if (!strchr(line, '\n') && !feof(stdin)) {
-                int ch; while ((ch = getchar()) != '\n' && ch != EOF) {}
-                fprintf(stderr, "<repl>: line too long (over %d chars)\n", (int)sizeof line - 2);
-                pending[0] = '\0';   /* a dropped line corrupts any pending input */
+            repl_line++;
+            if (memchr(line, 0, (size_t)nread)) {
+                fprintf(stderr, "<repl>:%d: NUL byte in source (source must be text)\n", repl_line);
+                pending_len = 0;   /* a dropped line corrupts any pending input */
                 rc = 1;
                 continue;
             }
-            if (strlen(pending) + strlen(line) >= sizeof pending - 1) {
+            if (pending_len + (size_t)nread >= sizeof pending) {
                 fprintf(stderr, "<repl>: input too long\n");
-                pending[0] = '\0';
+                pending_len = 0;
                 rc = 1;
                 continue;
             }
-            strcat(pending, line);
+            memcpy(pending + pending_len, line, (size_t)nread);
+            pending_len += (size_t)nread;
+            pending[pending_len] = '\0';   /* no NUL can be inside (checked above) */
             if (!fable_source_complete(pending)) continue;   /* read more lines */
             interpret(pending, "<repl>");
             vm.had_runtime_error = false;
-            pending[0] = '\0';
+            pending_len = 0;
         }
+        free(line);
         if (interactive) printf("\n");
     }
 

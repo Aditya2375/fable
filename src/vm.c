@@ -32,7 +32,6 @@ static const char *fmt_num(double v) {
     return buf;
 }
 
-static int vm_stack_depth(void) { return (int)(vm.top - vm.stack); }
 
 /* ---- allocator with GC hook ----
  * Every block carries a 16-byte header holding its requested size, so
@@ -533,18 +532,20 @@ static InterpretResult run(void) {
                 break;
             }
             case OP_BUILD_LIST: {
-                uint16_t n = READ_U16();
                 ObjList *l = list_new();
-                /* elements sit above the new list on the stack: shield first */
+                /* the push itself roots the new list; stop cleanly when the
+                 * stack is full before anything allocates further */
                 vm_push(OBJ_VAL(l));
-                /* full stack: stop before the copy loop allocates with the
-                 * list unrooted */
                 if (vm.had_runtime_error) goto rt_fail;
-                for (int i = (int)vm_stack_depth() - n - 1; i < (int)vm_stack_depth() - 1; i++)
-                    varray_push(&l->items, vm.stack[i]);
-                vm_pop();                    /* the shield */
-                vm.top -= n;                 /* the elements */
-                vm_push(OBJ_VAL(l));
+                break;
+            }
+            case OP_LIST_APPEND: {
+                /* the list sits directly below the element, so both stay
+                 * stack-rooted while varray_push allocates */
+                Value elem = vm_peek(0);
+                ObjList *l = AS_LIST(vm_peek(1));
+                varray_push(&l->items, elem);
+                vm_pop();                    /* the element; the list stays */
                 break;
             }
             case OP_INDEX_GET: {

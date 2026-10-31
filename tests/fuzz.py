@@ -189,7 +189,25 @@ def main():
                 fails += 1
             else:
                 nul_ok += 1
-    print(f"fuzz: {len(tripwires)} termination tripwires + {nul_ok} NUL tripwires passed" if not fails else "")
+    # NUL-byte tripwires for the REPL (round-7 F2): piped stdin with a NUL
+    # must be rejected loudly (nonzero exit, "NUL byte" on stderr), never
+    # silently truncated so a prefix or suffix runs unnoticed.
+    repl_nul_cases = [
+        (b"print(1\x00);\n", b""),                    # mid-line: nothing runs
+        (b"print(1);\x00print(999);", b""),            # one tainted line: nothing runs
+        (b"print(7)\x00", b""),                        # unterminated at EOF
+        (b"\x00", b""),                                # only a NUL
+        (b"let x = 1;\nprint(x\x00);\nprint(2);\n", b"2\n"),  # bad line dropped, session continues
+    ]
+    repl_nul_ok = 0
+    for i, (blob, want) in enumerate(repl_nul_cases):
+        p = subprocess.run([args.bin], input=blob, capture_output=True, timeout=10)
+        if p.returncode == 0 or b"NUL byte" not in p.stderr or p.stdout != want:
+            print(f"FAIL repl-nul {i}: rc {p.returncode} stdout {p.stdout[:80]!r} stderr {p.stderr[:120]!r}")
+            fails += 1
+        else:
+            repl_nul_ok += 1
+    print(f"fuzz: {len(tripwires)} termination tripwires + {nul_ok} file NUL + {repl_nul_ok} REPL NUL tripwires passed" if not fails else "")
 
     if fails:
         print(f"fuzz: {fails} failures")

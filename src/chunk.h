@@ -37,7 +37,8 @@ typedef enum {
     OP_CLOSURE,      /* u16 function constant + upvalue byte pairs */
     OP_CLOSE_UPVALUE,
     OP_RETURN,
-    OP_BUILD_LIST,   /* u16 element count */
+    OP_BUILD_LIST,   /* -> new empty list (kept on the stack while filling) */
+    OP_LIST_APPEND,  /* list value -> list (append; one slot per element) */
     OP_INDEX_GET,    /* list index -> value */
     OP_INDEX_SET,    /* list index value -> */
 } OpCode;

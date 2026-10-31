@@ -29,7 +29,6 @@ src/compiler.c|at most 255 parameters|at most 255 parameters
 src/compiler.c|at most 255 arguments|255 arguments
 src/compiler.c|too many local variables in one function|at most 255 locals
 src/compiler.c|too many captured variables in one function|at most 256 upvalues
-src/compiler.c|list literal too long|65535 elements
 src/compiler.c|too many constants in one chunk|65536 constants
 src/compiler.c|jump too far|jump too far
 src/compiler.c|loop body too large|loop body too large

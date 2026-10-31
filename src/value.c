@@ -46,15 +46,18 @@ bool value_truthy(Value v) {
 }
 
 /* Shortest round-trip number formatting: the printed form strtod()s back to
- * the exact same double (so num(str(x)) == x). Integers under 1e15 print
- * without a decimal point; -0 keeps its sign; nan/inf are words. Never casts
- * an out-of-range double to long long (that is UB): the magnitude check runs
- * before any cast. */
+ * the exact same double (so num(str(x)) == x). Integral values with
+ * magnitude at most 2^53 (the largest integer magnitude where every value
+ * is exactly representable as a double) print as plain integers: they are
+ * exact, so the full decimal form is both shortest and what a reader
+ * expects. -0 keeps its sign; nan/inf are words. Never casts an
+ * out-of-range double to long long (that is UB): the magnitude check runs
+ * before any cast, and 2^53 fits in a 64-bit long long. */
 void num_to_str(double v, char *buf, size_t n) {
     if (isnan(v)) { snprintf(buf, n, "nan"); return; }
     if (isinf(v)) { snprintf(buf, n, v > 0 ? "inf" : "-inf"); return; }
     if (v == 0) { snprintf(buf, n, signbit(v) ? "-0" : "0"); return; }
-    if (fabs(v) < 1e15 && v == (double)(long long)v) {
+    if (fabs(v) <= 9007199254740992.0 /* 2^53 */ && v == (double)(long long)v) {
         snprintf(buf, n, "%lld", (long long)v);   /* 3, not 3.0 */
         return;
     }

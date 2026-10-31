@@ -31,10 +31,25 @@ out=$(printf '{\n# c' | "$BIN" 2>&1) && rc=$? || rc=$?
 if [ "$rc" -eq 0 ] || ! printf '%s' "$out" | grep -q "unexpected end of input"; then
     echo "FAIL cli: REPL EOF inside comment with open brace (rc=$rc: $out)"; cli_fail=1
 fi
-# an over-long input line is an error with a nonzero exit, not a silent skip
-out=$(awk 'BEGIN{for(i=0;i<5000;i++)printf "1"}' | "$BIN" 2>&1) && rc=$? || rc=$?
-if [ "$rc" -eq 0 ] || ! printf '%s' "$out" | grep -q "line too long"; then
-    echo "FAIL cli: over-long line must error and exit nonzero (rc=$rc: $out)"; cli_fail=1
+# round-7 F2: input lines have no length cap (getline) - a 9000-char line
+# just runs
+out=$(awk 'BEGIN{printf "print(1"; for(i=0;i<3000;i++)printf "+1"; printf ");\n"}' | "$BIN" 2>&1) && rc=$? || rc=$?
+if [ "$rc" -ne 0 ] || [ "$out" != "3001" ]; then
+    echo "FAIL cli: a 9000-char input line must run (rc=$rc: $out)"; cli_fail=1
+fi
+# round-7 F2: a NUL byte on stdin is an error with its line and a nonzero
+# exit, never a silent truncation - mid-line, final-line and unterminated
+out=$(printf 'print(1\000);\nprint("after");\n' | "$BIN" 2>/tmp/fable-repl-nul.err) && rc=$? || rc=$?
+if [ "$rc" -eq 0 ] || ! grep -q '<repl>:1: NUL byte' /tmp/fable-repl-nul.err || [ "$out" != "after" ]; then
+    echo "FAIL cli: NUL mid-line must drop that line, error nonzero, continue (rc=$rc: $out)"; cli_fail=1
+fi
+out=$(printf 'print(1);\n\000print(999);' | "$BIN" 2>/tmp/fable-repl-nul2.err) && rc=$? || rc=$?
+if [ "$rc" -eq 0 ] || ! grep -q '<repl>:2: NUL byte' /tmp/fable-repl-nul2.err || [ "$out" != "1" ]; then
+    echo "FAIL cli: NUL final-line must error nonzero, earlier lines still ran (rc=$rc: $out)"; cli_fail=1
+fi
+out=$(printf 'print(7)\000' | "$BIN" 2>/tmp/fable-repl-nul3.err) && rc=$? || rc=$?
+if [ "$rc" -eq 0 ] || ! grep -q '<repl>:1: NUL byte' /tmp/fable-repl-nul3.err || [ -n "$out" ]; then
+    echo "FAIL cli: unterminated NUL line must error nonzero (rc=$rc: $out)"; cli_fail=1
 fi
 # round-6 F2: a NUL byte in a script file is an error with its line,
 # never a silently truncated program
@@ -66,7 +81,7 @@ out=$(awk 'BEGIN{for(i=0;i<17;i++){for(j=0;j<4000;j++)printf "("; printf "\n"}pr
 if [ "$rc" -eq 0 ] || ! printf '%s' "$out" | grep -q "input too long"; then
     echo "FAIL cli: over-64KB pending input must error and exit nonzero (rc=$rc: $out)"; cli_fail=1
 fi
-[ "$cli_fail" -eq 0 ] && echo "cli: 10 checks passed" || fail=1
+[ "$cli_fail" -eq 0 ] && echo "cli: 13 checks passed" || fail=1
 
 # Depth-guard termination (round-5 HIGH1): a guard firing mid-parse must end
 # in one clean error, in every position - pre-fix these spun at 100% CPU

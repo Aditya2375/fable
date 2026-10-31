@@ -455,16 +455,17 @@ static void call(bool can_assign) {
 
 static void list_lit(bool can_assign) {
     (void)can_assign;
-    int n = 0;
+    /* Incremental build: the list lives on the stack and each element is
+     * appended as it is parsed, so a literal costs two stack slots no
+     * matter how many elements it has - and needs no element-count cap. */
+    emit(OP_BUILD_LIST);
     if (!check(T_RBRACKET)) {
         do {
             expression();
-            if (n == UINT16_MAX) { error_at(&P.prev, "list literal too long"); break; }
-            n++;
+            emit(OP_LIST_APPEND);
         } while (match(T_COMMA));
     }
     consume(T_RBRACKET, "expected ']' after list elements");
-    emit16(OP_BUILD_LIST, (uint16_t)n);
 }
 
 static void index_op(bool can_assign) {

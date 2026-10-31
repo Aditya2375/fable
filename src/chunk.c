@@ -117,11 +117,8 @@ static int dis_one(Chunk *c, int off, FILE *out) {
         }
         case OP_CLOSE_UPVALUE: return simple("OP_CLOSE_UPVALUE", off, out);
         case OP_RETURN: return simple("OP_RETURN", off, out);
-        case OP_BUILD_LIST: {
-            uint16_t n = (uint16_t)((c->code[off + 1] << 8) | c->code[off + 2]);
-            fprintf(out, "%-16s %4d\n", "OP_BUILD_LIST", n);
-            return off + 3;
-        }
+        case OP_BUILD_LIST: return simple("OP_BUILD_LIST", off, out);
+        case OP_LIST_APPEND: return simple("OP_LIST_APPEND", off, out);
         case OP_INDEX_GET: return simple("OP_INDEX_GET", off, out);
         case OP_INDEX_SET: return simple("OP_INDEX_SET", off, out);
     }
