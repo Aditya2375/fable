@@ -1141,6 +1141,80 @@ static void critic_r6(void) {
     gc_collect();   /* drop the big failed-compile garbage before r4's GC accounting checks */
 }
 
+static void critic_r9(void) {
+    InterpretResult r;
+    char *out;
+    /* HIGH (repro A): the 64-constant boundary with a fresh string constant.
+     * 32 `let aI = I;` lines fill the chunk with exactly 64 constants; the
+     * 65th constant builds the dedupe table, and building it allocates.
+     * Pre-fix the fresh string sat in a C local unshielded, so that
+     * allocation's collection freed it out from under const_hash (ASan
+     * use-after-free under GC_STRESS). The fix shields the constant on the
+     * VM stack across the whole prologue. */
+    {
+        size_t cap = 32 * 16 + 64;
+        char *src = malloc(cap);
+        char *w = src;
+        for (int i = 0; i < 32; i++) w += sprintf(w, "let a%d = %d; ", i, i);
+        w += sprintf(w, "let s = \"MARKER65\"; print(s);");
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_OK && !strcmp(out, "MARKER65\n"));
+        free(out); free(src);
+    }
+    /* HIGH (repro B, heap pressure in a plain build): a 4 MB string literal
+     * crosses the 1 MB GC threshold while string_take holds gc_paused, so the
+     * first unpaused allocation afterwards - building the dedupe table at
+     * constant 65 - collects. Pre-fix that freed the unshielded constant and
+     * the program later printed "undefined variable 's'". */
+    {
+        size_t big = 4 * 1024 * 1024;
+        char *src = malloc(32 * 16 + big + 128);
+        char *w = src;
+        for (int i = 0; i < 32; i++) w += sprintf(w, "let a%d = %d; ", i, i);
+        w += sprintf(w, "let big = \"");
+        memset(w, 'x', big); w += big;
+        w += sprintf(w, "\"; let s = \"MARKER65\"; print(s);");
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_OK && !strcmp(out, "MARKER65\n"));
+        free(out); free(src);
+        gc_collect();   /* shed the 4 MB of garbage */
+    }
+    /* HIGH: fresh string constants at every table-growth boundary. 350
+     * distinct string constants cross the initial build at 64 and the
+     * 2/3-load grows at 171 (->512) and 342 (->1024); under GC_STRESS each
+     * grow allocates and collects while the just-added constant is only
+     * reachable through the round-9 shield. */
+    {
+        char *src = malloc(350 * 12 + 64);
+        char *w = src;
+        w += sprintf(w, "let x = ");
+        for (int i = 0; i < 350; i++) w += sprintf(w, "%s\"c%03d\"", i ? " + " : "", i);
+        w += sprintf(w, "; print(len(x));");
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_OK && !strcmp(out, "1400\n"));   /* 350 x 4 chars */
+        free(out); free(src);
+    }
+    /* L1: an escaped newline inside a string still advances the line count,
+     * so a later error points at the true line. Pre-fix this reported
+     * line 2 for an error on line 3. */
+    out = run_capture("let s = \"abc\\\ndef\";\nlet x = ;", &r);
+    OK(r == INTERPRET_COMPILE_ERROR && strstr(last_err, "<test>:3:") != NULL);
+    free(out);
+    /* L2: -disasm shows nested function chunks, not just the top level. */
+    vm.disasm = true;
+    out = run_capture("fn f() { return 1; } print(f());", &r);
+    vm.disasm = false;
+    OK(r == INTERPRET_OK && strstr(out, "== f ==") != NULL);
+    free(out);
+    /* L3: arity errors pluralize "argument" correctly on both call paths. */
+    out = run_capture("len();", &r);
+    OK(r == INTERPRET_RUNTIME_ERROR && strstr(last_err, "'len' expects 1 argument, got 0") != NULL);
+    free(out);
+    out = run_capture("fn g(a, b) { return a; } g(1);", &r);
+    OK(r == INTERPRET_RUNTIME_ERROR && strstr(last_err, "'g' expects 2 arguments, got 1") != NULL);
+    free(out);
+}
+
 int main(void) {
     vm_init(stdout, stderr);
     lexer_basics();
@@ -1153,6 +1227,7 @@ int main(void) {
     critic_r3();
     critic_r2();
     critic_r1();
+    critic_r9();
     repl_echo();
     end_to_end();
     /* GC: allocate a pile of garbage, force a collection, keep working */

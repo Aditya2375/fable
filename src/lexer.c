@@ -113,7 +113,12 @@ static Token string_lit(Lexer *lx) {
     int start_line = lx->line;   /* the line of the opening quote */
     while (peek(lx) != '"' && !at_end(lx)) {
         if (peek(lx) == '\n') lx->line++;
-        if (peek(lx) == '\\' && peek_next(lx) != '\0') { advance(lx); advance(lx); continue; }
+        if (peek(lx) == '\\' && peek_next(lx) != '\0') {
+            advance(lx);
+            if (peek(lx) == '\n') lx->line++;   /* an escaped newline still counts (round-9 L1) */
+            advance(lx);
+            continue;
+        }
         advance(lx);
     }
     if (at_end(lx)) return error_at(start_line, "unterminated string");

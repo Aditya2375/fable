@@ -83,11 +83,16 @@ static void dedupe_grow(Chunk *c, int ncap) {
 }
 
 int chunk_add_constant(Chunk *c, Value v) {
+    /* Shield v across the whole prologue: the table build/grow allocates,
+     * and a collection with v only in a C local freed fresh string
+     * constants out from under const_hash (round-9 HIGH). Compile-time
+     * stack space is guaranteed: compilation only runs before execution. */
+    vm_push(v);
     bool tabbed = !dedupe_skipped(v);
     if (c->dedupe_cap == 0) {
         if (c->constants.count < DEDUPE_MIN) {
             for (int i = 0; i < c->constants.count; i++)
-                if (values_equal(c->constants.items[i], v)) return i;
+                if (values_equal(c->constants.items[i], v)) { vm_pop(); return i; }
             tabbed = false;   /* still under the scan threshold: no table yet */
         } else {
             dedupe_grow(c, 256);
@@ -98,17 +103,19 @@ int chunk_add_constant(Chunk *c, Value v) {
         int i = (int)(const_hash(v) & (uint32_t)m);
         while (c->dedupe[i]) {
             int at = c->dedupe[i] - 1;
-            if (values_equal(c->constants.items[at], v)) return at;
+            if (values_equal(c->constants.items[at], v)) { vm_pop(); return at; }
             i = (i + 1) & m;
         }
     }
-    vm_push(v);   /* GC: the chunk's array may move it */
-    varray_push(&c->constants, v);
+    varray_push(&c->constants, v);   /* rooted by the shield above */
     vm_pop();
     if (tabbed) {
+        /* a grow re-inserts every constant including the new one; only the
+         * no-grow path inserts it by itself (round-9 L4) */
         if (c->constants.count > (c->dedupe_cap * 2) / 3)
             dedupe_grow(c, c->dedupe_cap * 2);
-        dedupe_insert(c, c->constants.count - 1);
+        else
+            dedupe_insert(c, c->constants.count - 1);
     }
     return c->constants.count - 1;
 }
@@ -204,4 +211,13 @@ void chunk_disassemble(Chunk *c, const char *name, FILE *out) {
     fprintf(out, "== %s ==\n", name);
     for (int off = 0; off < c->count;)
         off = dis_one(c, off, out);
+    /* nested function chunks too: -disasm used to show only the top level
+     * (round-9 L2) */
+    for (int i = 0; i < c->constants.count; i++) {
+        Value v = c->constants.items[i];
+        if (IS_OBJ(v) && AS_OBJ(v)->type == OBJ_FUNCTION) {
+            ObjFunction *f = (ObjFunction *)AS_OBJ(v);
+            chunk_disassemble(&f->chunk, f->name ? f->name->chars : "<fn>", out);
+        }
+    }
 }

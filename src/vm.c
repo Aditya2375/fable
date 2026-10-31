@@ -271,8 +271,9 @@ static bool call_value(Value callee, int argc) {
         case OBJ_CLOSURE: {
             ObjClosure *c = AS_CLOSURE(callee);
             if (c->fn->arity != argc) {
-                runtime_error("'%s' expects %d arguments, got %d",
-                              c->fn->name ? c->fn->name->chars : "fn", c->fn->arity, argc);
+                runtime_error("'%s' expects %d argument%s, got %d",
+                              c->fn->name ? c->fn->name->chars : "fn", c->fn->arity,
+                              c->fn->arity == 1 ? "" : "s", argc);
                 return false;
             }
             if (vm.frame_count == FRAMES_MAX) {
@@ -288,7 +289,8 @@ static bool call_value(Value callee, int argc) {
         case OBJ_NATIVE: {
             ObjNative *n = AS_NATIVE(callee);
             if (n->arity >= 0 && n->arity != argc) {
-                runtime_error("'%s' expects %d arguments, got %d", n->name, n->arity, argc);
+                runtime_error("'%s' expects %d argument%s, got %d",
+                              n->name, n->arity, n->arity == 1 ? "" : "s", argc);
                 return false;
             }
             bool err = false;

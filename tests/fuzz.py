@@ -20,36 +20,53 @@ import os
 
 def gen_leaf(rng, vars_):
     if vars_ and rng.random() < 0.6:
-        return rng.choice(vars_)
-    return str(rng.randint(-20, 20))
+        v = rng.choice(vars_)
+        return v, v
+    n = str(rng.randint(-20, 20))
+    return n, n
 
 
 def gen_expr(rng, vars_, depth, allow_mul=True):
-    """An integer-valued expression valid in both fable and python3, with
+    """An integer-valued expression as a (fable, python) pair, with
     magnitudes bounded far below 2^53 (fable numbers are doubles): `*` only
     ever multiplies a leaf by a small constant, and never appears where a
-    loop body could compound it."""
+    loop body could compound it. `%` appears only as leaf % small nonzero
+    constant; fable % is C fmod, so the oracle uses math.fmod, which agrees
+    with it on every integer input (round-9 L5: the generator really emits
+    the % this docstring used to only talk about)."""
     if depth == 0 or (vars_ and rng.random() < 0.35):
         return gen_leaf(rng, vars_)
+    if rng.random() < 0.15:
+        f, p = gen_leaf(rng, vars_)
+        k = rng.randint(2, 97)
+        return f"({f} % {k})", f"int(math.fmod({p}, {k}))"
     if allow_mul and rng.random() < 0.25:
-        return f"({gen_leaf(rng, vars_)} * {rng.randint(-12, 12)})"
+        f, p = gen_leaf(rng, vars_)
+        k = rng.randint(-12, 12)
+        return f"({f} * {k})", f"({p} * {k})"
     op = rng.choice(["+", "-"])
-    return f"({gen_expr(rng, vars_, depth - 1, allow_mul)} {op} {gen_expr(rng, vars_, depth - 1, allow_mul)})"
+    f1, p1 = gen_expr(rng, vars_, depth - 1, allow_mul)
+    f2, p2 = gen_expr(rng, vars_, depth - 1, allow_mul)
+    return f"({f1} {op} {f2})", f"({p1} {op} {p2})"
 
 
 def gen_cond(rng, vars_):
-    a = gen_expr(rng, vars_, 2)
-    b = gen_expr(rng, vars_, 2)
+    af, ap = gen_expr(rng, vars_, 2)
+    bf, bp = gen_expr(rng, vars_, 2)
     op = rng.choice(["<", "<=", ">", ">=", "==", "!="])
-    return f"{a} {op} {b}"
+    return f"{af} {op} {bf}", f"{ap} {op} {bp}"
 
 
 def gen_program(rng):
-    """Parallel fable/python sources. Integer-only, % only as mod-1000 idiom
-    (fable % is fmod; on non-negative integers it matches Python's %)."""
+    """Parallel fable/python sources. Integer arithmetic only; fable % is C
+    fmod, so the python oracle translates it with math.fmod (they agree on
+    all integer inputs, signs included). Some programs carry 65-120 distinct
+    string constants in one chunk, exercising the constant-table build at
+    the 64-constant boundary with fresh strings (round-9 HIGH)."""
     flines, plines = [], []
     vars_ = []
     n = rng.randint(3, 8)
+    nstrings = 0
 
     def emit(f, p, indent=0):
         flines.append("    " * indent + f)
@@ -57,36 +74,44 @@ def gen_program(rng):
 
     for _ in range(n):
         kind = rng.random()
-        if kind < 0.4 or not vars_:
+        if kind < 0.12:
+            # >64 distinct string constants: the dedupe table is built/grown
+            # while these fresh strings are only reachable via the round-9
+            # compile-time shield
+            sv = f"str{nstrings}"
+            nstrings += 1
+            lits = ['"lit%d_%d"' % (j, rng.randrange(10**9)) for j in range(rng.randint(65, 120))]
+            cat = " + ".join(lits)
+            emit(f"let {sv} = {cat}; print(len({sv}));",
+                 f"{sv} = {cat}\nprint(len({sv}))")
+        elif kind < 0.4 or not vars_:
             v = f"v{len(vars_)}"
             vars_.append(v)
-            emit(f"let {v} = {gen_expr(rng, vars_[:-1], 3)};",
-                 f"{v} = {gen_expr(rng, vars_[:-1], 3)}")
-            # re-emit identical expr is wasteful; regenerate identically instead
-            flines[-1] = "let %s = %s;" % (v, plines[-1].split(" = ", 1)[1])
+            ef, ep = gen_expr(rng, vars_[:-1], 3)
+            emit(f"let {v} = {ef};", f"{v} = {ep}")
         elif kind < 0.6:
             v = rng.choice(vars_)
-            e = gen_expr(rng, vars_, 3)
-            emit(f"{v} = {e};", f"{v} = {e}")
+            ef, ep = gen_expr(rng, vars_, 3)
+            emit(f"{v} = {ef};", f"{v} = {ep}")
         elif kind < 0.8:
-            c = gen_cond(rng, vars_)
-            e1 = gen_expr(rng, vars_, 2)
-            e2 = gen_expr(rng, vars_, 2)
-            emit(f"if ({c}) {{ print({e1}); }} else {{ print({e2}); }}",
-                 f"print({e1}) if ({c}) else print({e2})")
+            cf, cp = gen_cond(rng, vars_)
+            e1f, e1p = gen_expr(rng, vars_, 2)
+            e2f, e2p = gen_expr(rng, vars_, 2)
+            emit(f"if ({cf}) {{ print({e1f}); }} else {{ print({e2f}); }}",
+                 f"print({e1p}) if ({cp}) else print({e2p})")
         else:
             # while loops must provably terminate: guard with a counter
             v = rng.choice(vars_)
             guard = f"g{len(vars_)}"
             vars_.append(guard)
-            e = gen_expr(rng, vars_[:-1], 2, allow_mul=False)
-            c = gen_cond(rng, vars_[:-1])
-            emit(f"let {guard} = 0; while ({c} and {guard} < 25) {{ {v} = {e}; {guard} = {guard} + 1; }}",
-                 f"{guard} = 0\nwhile ({c}) and ({guard} < 25):\n        {v} = {e}\n        {guard} = {guard} + 1")
+            ef, ep = gen_expr(rng, vars_[:-1], 2, allow_mul=False)
+            cf, cp = gen_cond(rng, vars_[:-1])
+            emit(f"let {guard} = 0; while ({cf} and {guard} < 25) {{ {v} = {ef}; {guard} = {guard} + 1; }}",
+                 f"{guard} = 0\nwhile ({cp}) and ({guard} < 25):\n        {v} = {ep}\n        {guard} = {guard} + 1")
         if rng.random() < 0.5:
-            e = gen_expr(rng, vars_, 2)
-            emit(f"print({e});", f"print({e})")
-    return "\n".join(flines) + "\n", "\n".join(plines) + "\n"
+            ef, ep = gen_expr(rng, vars_, 2)
+            emit(f"print({ef});", f"print({ep})")
+    return "\n".join(flines) + "\n", "import math\n" + "\n".join(plines) + "\n"
 
 
 def run(cmd, timeout=10):
@@ -104,6 +129,7 @@ def main():
     rng = random.Random(args.seed)
     fails = 0
     skipped_big = 0
+    skipped_neg0 = 0
 
     with tempfile.TemporaryDirectory() as td:
         ff = os.path.join(td, "p.fable")
@@ -121,18 +147,31 @@ def main():
             if prc != 0:
                 print(f"note program {i}: generator emitted bad python (skipped)\n{perr}")
                 continue
-            # The oracle is exact integers; fable numbers are doubles. Past
-            # 2^53 a doubling loop leaves the exactly-representable range
-            # (fable rounds, Python does not), so the outputs legitimately
-            # diverge - skip rather than compare (round-8: seed 25).
-            if any(l and abs(int(l)) >= 2**53 for l in pout.split("\n") if l.lstrip("-").isdigit()):
-                skipped_big += 1
-                continue
-            # IEEE vs Python ints: fable prints -0 for 0 * -3, Python has no -0.
-            norm = lambda t: "\n".join("0" if l == "-0" else l for l in t.split("\n"))
-            if norm(fout) != norm(pout):
-                print(f"FAIL program {i}: output differs\nfable:\n{fout}\npython:\n{pout}\n---\n{fable_src}")
+            # Compare line by line so one over-range line cannot mask a real
+            # bug on the other lines (round-9 L5): the oracle is exact
+            # integers, fable numbers are doubles, so only the lines where
+            # python reaches 2^53 legitimately diverge and are skipped.
+            fl = fout.split("\n")
+            pl = pout.split("\n")
+            if len(fl) != len(pl):
+                print(f"FAIL program {i}: line count differs\nfable:\n{fout}\npython:\n{pout}\n---\n{fable_src}")
                 fails += 1
+                continue
+            for a, b in zip(fl, pl):
+                if b and b.lstrip("-").isdigit() and abs(int(b)) >= 2**53:
+                    skipped_big += 1
+                    continue
+                # fable prints IEEE -0 where the true result is 0 (0 * -3,
+                # fmod of a -0); python ints have no -0 at all, so that exact
+                # pair is accepted - but a -0 against any other oracle line
+                # is a real bug (round-9 L5: no blanket -0 normalization).
+                if a == "-0" and b == "0":
+                    skipped_neg0 += 1
+                    continue
+                if a != b:
+                    print(f"FAIL program {i}: fable {a!r} vs python {b!r}\nfable:\n{fout}\npython:\n{pout}\n---\n{fable_src}")
+                    fails += 1
+                    break
 
         for i in range(args.blobs):
             blob = bytes(rng.randrange(0, 256) for _ in range(rng.randrange(1, 400)))
@@ -220,7 +259,8 @@ def main():
     if fails:
         print(f"fuzz: {fails} failures")
         return 1
-    big = f", {skipped_big} past the 2^53 oracle (skipped)" if skipped_big else ""
+    big = f", {skipped_big} lines past the 2^53 oracle (skipped)" if skipped_big else ""
+    big += f", {skipped_neg0} IEEE -0 lines accepted" if skipped_neg0 else ""
     print(f"fuzz: {args.programs} differential programs + {args.blobs} byte blobs passed (seed {args.seed}{big})")
     return 0
 
