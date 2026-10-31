@@ -7,7 +7,10 @@
 #include <string.h>
 #include <unistd.h>
 
-static char *read_file(const char *path) {
+/* Reads the whole file. Returns NULL on I/O error; *nul_line is set to the
+ * 1-based line of the first NUL byte (source is lexed as a C string, so a
+ * NUL would silently truncate the program - reject it instead). */
+static char *read_file(const char *path, int *nul_line) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
     fseek(f, 0, SEEK_END);
@@ -19,6 +22,14 @@ static char *read_file(const char *path) {
     size_t got = fread(buf, 1, (size_t)n, f);
     fclose(f);
     buf[got] = '\0';
+    const char *z = memchr(buf, 0, got);
+    if (z) {
+        int line = 1;
+        for (const char *p = buf; p < z; p++) if (*p == '\n') line++;
+        *nul_line = line;
+        free(buf);
+        return NULL;
+    }
     return buf;
 }
 
@@ -46,6 +57,12 @@ int main(int argc, char **argv) {
         }
     }
 
+    if (path && one) {
+        fprintf(stderr, "fable: give a script or -c, not both\n");
+        usage(stderr);
+        return 2;
+    }
+
     vm_init(stdout, stderr);
     vm.disasm = disasm;
     int rc = 0;
@@ -55,8 +72,17 @@ int main(int argc, char **argv) {
         InterpretResult r = interpret(one, "<cmdline>");
         rc = r == INTERPRET_OK ? 0 : 1;
     } else if (path) {
-        char *src = read_file(path);
-        if (!src) { fprintf(stderr, "fable: cannot read %s\n", path); vm_free(); return 1; }
+        int nul_line = 0;
+        char *src = read_file(path, &nul_line);
+        if (!src) {
+            if (nul_line)
+                fprintf(stderr, "fable: %s:%d: NUL byte in source file (source must be text)\n",
+                        path, nul_line);
+            else
+                fprintf(stderr, "fable: cannot read %s\n", path);
+            vm_free();
+            return 1;
+        }
         vm.repl = false;
         InterpretResult r = interpret(src, path);
         free(src);

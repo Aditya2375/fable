@@ -170,7 +170,26 @@ def main():
         if p.returncode == 0 or "too deeply" not in p.stderr:
             print(f"FAIL tripwire {i}: exit {p.returncode}, stderr: {p.stderr[:200]}")
             fails += 1
-    print(f"fuzz: {len(tripwires)} termination tripwires passed" if not fails else "")
+    # NUL-byte tripwires (round-6 F2): a script file containing NUL must be
+    # rejected with a clear error - never silently truncated so a prefix runs.
+    nul_cases = [
+        b"print(1);\x00print(2);",
+        b"\x00",
+        b"let x = 1;\n\x00\nprint(x);",
+        b"print(1);\nprint(2);\n\x00",
+    ]
+    nul_ok = 0
+    with tempfile.TemporaryDirectory() as td2:
+        nf = os.path.join(td2, "nul.fable")
+        for i, blob in enumerate(nul_cases):
+            open(nf, "wb").write(blob)
+            p = subprocess.run([args.bin, nf], capture_output=True, timeout=10)
+            if p.returncode == 0 or p.stdout or b"NUL byte" not in p.stderr:
+                print(f"FAIL nul {i}: rc {p.returncode} stdout {p.stdout[:80]!r} stderr {p.stderr[:120]!r}")
+                fails += 1
+            else:
+                nul_ok += 1
+    print(f"fuzz: {len(tripwires)} termination tripwires + {nul_ok} NUL tripwires passed" if not fails else "")
 
     if fails:
         print(f"fuzz: {fails} failures")

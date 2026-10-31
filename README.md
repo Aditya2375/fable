@@ -4,7 +4,7 @@ fable is a small, complete programming language: a tree-walk-free, bytecode
 interpreter written in C11 with no dependencies beyond libc and libm. It has
 lexically scoped variables, first-class functions, closures with shared
 upvalues, lists, strings, and a mark-sweep garbage collector. The interpreter core is
-2835 lines of C.
+2865 lines of C.
 
 Try it in your browser: **https://aditya2375.github.io/fable/** - the same C
 compiled to WebAssembly, running entirely on your machine.
@@ -135,7 +135,14 @@ line (and says so) instead of wedging the session.
 ## Errors
 
 Compile errors report the line and a caret-free excerpt; runtime errors print
-a message plus the line. Both exit with a nonzero status and clean up the VM.
+a message plus the line. Running a script file or `-c`, any error exits nonzero
+and cleans up the VM; a script file containing a NUL byte is rejected up front
+(`NUL byte in source file`, naming its line) rather than silently truncated.
+In the REPL a compile or runtime error prints and the session continues, so the
+exit status stays 0; only input that ends with a bracket, string or comment
+still open, a single line over 4094 characters, or accumulated multi-line input
+over 64 KB exits nonzero. `fable script.fable -c "..."` is a usage error
+(exit 2): give a script or `-c`, not both.
 
 ```
 $ fable -c 'let x = ;'
@@ -156,20 +163,30 @@ fable is deliberately small. It does **not** have:
 - tail-call optimization
 
 Resource limits, each enforced with a clean error (never a crash) and each
-covered by a unit test: call depth is capped at 1024 frames (65536 stack
-values, `stack overflow` past that, traces capped at 12 frames plus a
-`... N more frames` summary); expressions nest at most 512 levels - each
-nested construct (parentheses, list brackets, unary operators) costs
+pinned by the unit, CLI or fuzz suites: call depth is capped at 1024 frames
+(65536 stack values, `stack overflow` past that, traces capped at 12 frames
+plus a `... N more frames` summary); expressions nest at most 512 levels -
+each nested construct (parentheses, list brackets, unary operators) costs
 exactly one level, mixed or not, and so does each function-call or
 list-element layer (an argument or element nests 511 constructs deep
 inside its brackets, 510 inside two layers, and so on) - blocks 256,
 statement chains 256,
-function definitions 256; string concatenation caps the result at 256 MB
+function definitions 256; a function takes at most 255 parameters and
+scopes at most 255 locals (a frame has 256 slots; slot 0 is the function
+itself), a closure captures at most 256 upvalues, and a call passes at
+most 255 arguments; a list literal holds at most 65535 elements and one
+chunk at most 65536 constants; a jump spans at most 64 KB of bytecode
+(`jump too far` forward, `loop body too large` backward); string
+concatenation caps the result at 256 MB
 (`string too long` past that); list printing detects
-cycles (`[[...]]`) and caps nesting at 64 levels (`...`). After any depth
+cycles (`[[...]]`) and caps nesting at 64 levels (`...`). In the REPL, one
+input line is capped at 4094 characters (`line too long`) and accumulated
+multi-line input at 64 KB (`input too long`). After any depth
 guard fires, parsing stops with that one error - every parse loop exits
-instead of spinning (regression-tested with a 10-second wall-clock guard
-in the shell and fuzz suites, natively and in the wasm smoke test).
+instead of spinning, and no further diagnostics (including lexer errors in
+the remaining input) are emitted (regression-tested with a 10-second
+wall-clock guard in the shell and fuzz suites, natively and in the wasm
+smoke test).
 
 Named function *expressions* (`let f = fn g() {...}`) bind only `f`; the inner
 name is display metadata, not a self-reference. Use a `fn` declaration or a
@@ -207,7 +224,7 @@ byte counter tracks live bytes exactly, so long sessions don't ratchet); `make s
 ## Testing
 
 - `make test` runs everything:
-  - a C unit suite (`tests/unit/test-unit.c`) with **619 checks** covering
+  - a C unit suite (`tests/unit/test-unit.c`) with **642 checks** covering
     the lexer, values, hash table, bytecode chunks, and end-to-end programs
     (closures, recursion, shared upvalues, lists, error paths, IEEE edge
     cases, GC-safety patterns, and every resource limit above);

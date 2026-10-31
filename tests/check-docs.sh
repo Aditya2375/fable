@@ -22,5 +22,29 @@ lines=$(cat src/*.c src/*.h | wc -l)
 if ! grep -q "$lines lines of C" README.md; then
     echo "check-docs: README line count ($lines) missing or stale"; fail=1
 fi
+# Pin the documented limits (README "Honest limits") to the code that
+# enforces them: each pair is <file with the enforcing check>|<pattern there>|<README phrase>.
+pins="
+src/compiler.c|at most 255 parameters|at most 255 parameters
+src/compiler.c|at most 255 arguments|255 arguments
+src/compiler.c|too many local variables in one function|at most 255 locals
+src/compiler.c|too many captured variables in one function|at most 256 upvalues
+src/compiler.c|list literal too long|65535 elements
+src/compiler.c|too many constants in one chunk|65536 constants
+src/compiler.c|jump too far|jump too far
+src/compiler.c|loop body too large|loop body too large
+src/main.c|input too long|input too long
+src/main.c|NUL byte in source file|NUL byte
+src/obj.h|FABLE_STRING_MAX|256 MB
+"
+printf '%s' "$pins" | while IFS='|' read -r file src_pat doc_pat; do
+    [ -n "$file" ] || continue
+    if ! grep -qF "$src_pat" "$file"; then
+        echo "check-docs: enforcing code missing: $src_pat in $file"; exit 1
+    fi
+    if ! grep -qF "$doc_pat" README.md; then
+        echo "check-docs: README does not document: $doc_pat"; exit 1
+    fi
+done || fail=1
 [ "$fail" -eq 0 ] && echo "check-docs: ok"
 exit $fail

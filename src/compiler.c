@@ -73,7 +73,9 @@ static void advance(void) {
     for (;;) {
         P.cur = lexer_next(&P.lx);
         if (P.cur.type != T_ERROR) break;
-        error_at(&P.cur, "%.*s", P.cur.len, P.cur.start);
+        /* after a depth guard the parse is unwinding: report nothing more,
+         * but keep consuming so the loop still makes progress */
+        if (!P.depth_failed) error_at(&P.cur, "%.*s", P.cur.len, P.cur.start);
     }
 }
 
@@ -680,6 +682,8 @@ static void nested_statement(void) {
 }
 
 static void synchronize(void) {
+    if (P.depth_failed) return;   /* a depth guard ends the parse: do not
+                                     scan (and lex-error over) the rest */
     P.panic = false;
     while (P.cur.type != T_EOF) {
         if (P.prev.type == T_SEMICOLON) return;

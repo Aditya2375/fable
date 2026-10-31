@@ -36,7 +36,37 @@ out=$(awk 'BEGIN{for(i=0;i<5000;i++)printf "1"}' | "$BIN" 2>&1) && rc=$? || rc=$
 if [ "$rc" -eq 0 ] || ! printf '%s' "$out" | grep -q "line too long"; then
     echo "FAIL cli: over-long line must error and exit nonzero (rc=$rc: $out)"; cli_fail=1
 fi
-[ "$cli_fail" -eq 0 ] && echo "cli: 4 checks passed" || fail=1
+# round-6 F2: a NUL byte in a script file is an error with its line,
+# never a silently truncated program
+{ printf 'print(1);\nprint(2);'; printf '\000'; printf 'print(3);\n'; } > /tmp/fable-nul.fable
+out=$("$BIN" /tmp/fable-nul.fable 2>/tmp/fable-nul.err) && rc=$? || rc=$?
+if [ "$rc" -eq 0 ] || ! grep -q 'fable: /tmp/fable-nul.fable:2: NUL byte' /tmp/fable-nul.err; then
+    echo "FAIL cli: NUL byte must error nonzero with its line (rc=$rc: $(cat /tmp/fable-nul.err))"; cli_fail=1
+fi
+if [ -n "$out" ]; then
+    echo "FAIL cli: NUL script executed a prefix (stdout: $out)"; cli_fail=1
+fi
+# round-6 F4: a script and -c together are a usage error, not a silent choice
+out=$("$BIN" /tmp/fable-nul.fable -c 'print(222);' 2>&1) && rc=$? || rc=$?
+if [ "$rc" -ne 2 ] || ! printf '%s' "$out" | grep -q 'not both'; then
+    echo "FAIL cli: script + -c must be a usage error with exit 2 (rc=$rc: $out)"; cli_fail=1
+fi
+# round-6 F3: in the REPL, compile and runtime errors print and the session
+# continues - exit stays 0
+out=$(printf 'let x = ;\nprint("after");\n' | "$BIN" 2>/dev/null) && rc=$? || rc=$?
+if [ "$rc" -ne 0 ] || ! printf '%s' "$out" | grep -q after; then
+    echo "FAIL cli: REPL must survive a compile error with exit 0 (rc=$rc: $out)"; cli_fail=1
+fi
+out=$(printf 'print(nope);\nprint("after");\n' | "$BIN" 2>/dev/null) && rc=$? || rc=$?
+if [ "$rc" -ne 0 ] || ! printf '%s' "$out" | grep -q after; then
+    echo "FAIL cli: REPL must survive a runtime error with exit 0 (rc=$rc: $out)"; cli_fail=1
+fi
+# REPL multi-line input over 64 KB: "input too long", nonzero exit
+out=$(awk 'BEGIN{for(i=0;i<17;i++){for(j=0;j<4000;j++)printf "("; printf "\n"}printf ")\n"}' | "$BIN" 2>&1) && rc=$? || rc=$?
+if [ "$rc" -eq 0 ] || ! printf '%s' "$out" | grep -q "input too long"; then
+    echo "FAIL cli: over-64KB pending input must error and exit nonzero (rc=$rc: $out)"; cli_fail=1
+fi
+[ "$cli_fail" -eq 0 ] && echo "cli: 10 checks passed" || fail=1
 
 # Depth-guard termination (round-5 HIGH1): a guard firing mid-parse must end
 # in one clean error, in every position - pre-fix these spun at 100% CPU

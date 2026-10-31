@@ -89,6 +89,11 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
     r = run("print(2 + 2);");
     ok(r.rc === 0 && r.out.includes("4"), "wasm: session survives a depth-guard error");
 
+    /* R6 F1 regression: after a depth guard, trailing lexer errors must not
+     * cascade - exactly one error line */
+    r = run("let x = " + "(".repeat(513) + "7" + ")".repeat(513) + "; @");
+    ok(r.rc === 1 && r.err.includes("expression nested too deeply") && !r.err.includes("unexpected character"), "wasm: no lexer-error cascade after a depth guard");
+
     r = run("print(undefined_variable);");
     ok(r.rc !== 0, "wasm: runtime error reported");
     r = run("print(1 + 1);");

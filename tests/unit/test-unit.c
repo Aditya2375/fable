@@ -918,9 +918,142 @@ static void critic_r5(void) {
     free(p513);
 }
 
+
+/* ---- critic round 6 ---- */
+static void critic_r6(void) {
+    InterpretResult r;
+    char *out, *src;
+    char *p513 = src_parens(513);
+
+    /* F1: once a depth guard fires, that one error is the whole report -
+     * trailing lexer errors (unterminated string, stray character, open
+     * block comment) are no longer cascaded by the error-recovery scan. */
+    const char *tails[] = { "; \"unterminated", "; @", "; /* never closed" };
+    const char *forbidden[] = { "unterminated", "unexpected character", "unterminated" };
+    for (int i = 0; i < 3; i++) {
+        size_t cap = strlen(p513) + strlen(tails[i]) + 32;
+        src = malloc(cap);
+        snprintf(src, cap, "let x = %s%s", p513, tails[i]);
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_COMPILE_ERROR);
+        OK(strstr(last_err, "expression nested too deeply") != NULL);
+        OK(strstr(last_err, forbidden[i]) == NULL);   /* no cascade */
+        {   /* exactly one error line (each ends in a newline) */
+            int nl = 0;
+            for (const char *p = last_err; *p; p++) if (*p == '\n') nl++;
+            OK(nl == 1);
+        }
+        free(out); free(src);
+    }
+    free(p513);
+
+    /* F3: the documented limits are all real, each with its clean error */
+    src = malloc(1 << 20);   /* scratch space for the generated programs below */
+    {   /* 255 parameters pass, 256 are "at most 255 parameters" */
+        char *w = src;
+        w += sprintf(w, "fn f(");
+        for (int i = 0; i < 255; i++) w += sprintf(w, i ? ", a%d" : "a%d", i);
+        w += sprintf(w, ") { return a0; }");
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_OK);
+        free(out);
+        w += sprintf(w, " fn g(");
+        for (int i = 0; i < 256; i++) w += sprintf(w, i ? ", b%d" : "b%d", i);
+        w += sprintf(w, ") { return b0; }");
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_COMPILE_ERROR && strstr(last_err, "at most 255 parameters") != NULL);
+        free(out);
+    }
+    {   /* 256 call arguments: "at most 255 arguments" */
+        char *w = src;
+        w += sprintf(w, "fn h(");
+        for (int i = 0; i < 255; i++) w += sprintf(w, i ? ", a%d" : "a%d", i);
+        w += sprintf(w, ") { return a0; } h(");
+        for (int i = 0; i < 256; i++) w += sprintf(w, i ? ", %d" : "%d", i);
+        w += sprintf(w, ");");
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_COMPILE_ERROR && strstr(last_err, "at most 255 arguments") != NULL);
+        free(out);
+    }
+    {   /* 255 locals per function pass, the 256th is "too many local
+         * variables" (the frame holds 256 slots; slot 0 is the function) */
+        char *w = src;
+        w += sprintf(w, "fn f() { ");
+        for (int i = 0; i < 255; i++) w += sprintf(w, "let v%d = %d; ", i, i);
+        w += sprintf(w, "} fn g() { ");
+        for (int i = 0; i < 256; i++) w += sprintf(w, "let w%d = %d; ", i, i);
+        w += sprintf(w, "}");
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_COMPILE_ERROR && strstr(last_err, "too many local variables") != NULL);
+        free(out);
+    }
+    free(src);
+    /* 257 captures in one closure: mid's 3 locals plus its 254 upvalues
+     * captured from outer - "too many captured variables", and no other
+     * limit trips first */
+    {
+        size_t cap = 254 * 24 + 254 * 8 + 256;
+        src = malloc(cap);
+        char *w = src;
+        w += sprintf(w, "fn outer() { ");
+        for (int i = 0; i < 254; i++) w += sprintf(w, "let o%d = %d; ", i, i);
+        w += sprintf(w, "fn mid() { let m0 = 0; let m1 = 0; let m2 = 0; fn inner() { let t = m0 + m1 + m2");
+        for (int i = 0; i < 254; i++) w += sprintf(w, " + o%d", i);
+        w += sprintf(w, "; return t; } return inner; } return mid; }");
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_COMPILE_ERROR && strstr(last_err, "too many captured variables") != NULL);
+        OK(strstr(last_err, "too many local variables") == NULL);
+        free(out); free(src);
+    }
+    {   /* a 65536-element list literal: "list literal too long" */
+        src = src_with_nils("let x = [", 65536, "];");
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_COMPILE_ERROR && strstr(last_err, "list literal too long") != NULL);
+        free(out); free(src);
+    }
+    {   /* 65537 constants in one chunk: "too many constants in one chunk".
+         * One flat sum of distinct literals - global declarations would
+         * intern 65k names and permanently grow the (never-shrinking)
+         * intern table, which r4's live-byte accounting must not see. */
+        size_t cap = 65537 * 8 + 32;
+        src = malloc(cap);
+        char *w = src;
+        w += sprintf(w, "let x = 0");
+        for (int i = 1; i < 65537; i++) w += sprintf(w, " + %d", i);
+        w += sprintf(w, ";");
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_COMPILE_ERROR && strstr(last_err, "too many constants in one chunk") != NULL);
+        free(out); free(src);
+    }
+    {   /* a loop body over 64 KB of bytecode: "loop body too large";
+         * an if body over 64 KB: "jump too far" */
+        size_t cap = 7000 * 12 + 64;
+        src = malloc(cap);
+        char *w = src;
+        w += sprintf(w, "let i = 0; while (i < 1) { ");
+        for (int i = 0; i < 7000; i++) w += sprintf(w, "i = i + 1; ");
+        w += sprintf(w, "}");
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_COMPILE_ERROR && strstr(last_err, "loop body too large") != NULL);
+        free(out);
+        w = src;
+        w += sprintf(w, "let i = 0; if (1) { ");
+        for (int i = 0; i < 7000; i++) w += sprintf(w, "i = i + 1; ");
+        w += sprintf(w, "}");
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_COMPILE_ERROR && strstr(last_err, "jump too far") != NULL);
+        free(out); free(src);
+    }
+    out = run_capture("print(\"alive\");", &r);   /* VM healthy after all of it */
+    OK(r == INTERPRET_OK && !strcmp(out, "alive\n"));
+    free(out);
+    gc_collect();   /* drop the big failed-compile garbage before r4's GC accounting checks */
+}
+
 int main(void) {
     vm_init(stdout, stderr);
     lexer_basics();
+    critic_r6();
     critic_r5();
     values_basics();
     table_basics();
