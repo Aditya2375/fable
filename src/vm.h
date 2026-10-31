@@ -6,9 +6,9 @@
 #include "obj.h"
 #include "table.h"
 
-#define STACK_MAX   1024
+#define STACK_MAX   65536  /* 1024 frames x 64 slots */
 #define GC_THRESHOLD (1024 * 1024)
-#define FRAMES_MAX  64
+#define FRAMES_MAX  1024
 
 typedef struct {
     ObjClosure *closure;
@@ -45,6 +45,8 @@ typedef struct VM {
     bool repl;             /* expression statements echo their value */
     char errbuf[512];      /* last runtime/compile error */
     bool had_runtime_error;
+    bool disasm;           /* dump bytecode before running (-disasm) */
+    const char *src_name;  /* current source name for error messages */
 } VM;
 
 extern VM vm;

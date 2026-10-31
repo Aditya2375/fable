@@ -21,13 +21,14 @@ test: all
 	./tests/check-docs.sh
 
 sanitize: clean
-	$(MAKE) EXTRA="-fsanitize=address,undefined -fno-omit-frame-pointer" test
+	$(MAKE) EXTRA="-fsanitize=address,undefined,float-cast-overflow -fno-omit-frame-pointer" test
 
 stress: clean
 	$(MAKE) EXTRA="-DFABLE_GC_STRESS" test
 
 clean:
 	rm -rf build
-	rm -f docs/fable.js docs/fable.wasm
+	# docs/fable.js and docs/fable.wasm are committed artifacts: rebuild them
+	# with sh wasm/build.sh, never delete them here
 
 .PHONY: all test clean sanitize stress

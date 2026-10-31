@@ -9,6 +9,7 @@ void lexer_init(Lexer *lx, const char *src) {
     lx->cur = src;
     lx->line = 1;
     lx->failed = false;
+    lx->unterminated_comment = false;
 }
 
 static bool at_end(Lexer *lx) { return *lx->cur == '\0'; }
@@ -61,6 +62,7 @@ static void skip_space(Lexer *lx) {
                         else if (peek(lx) == '*' && peek_next(lx) == '/') { depth--; advance(lx); advance(lx); }
                         else advance(lx);
                     }
+                    if (depth > 0) lx->unterminated_comment = true;
                 } else return;
                 break;
             default: return;
@@ -137,6 +139,10 @@ static Token number_lit(Lexer *lx) {
 Token lexer_next(Lexer *lx) {
     skip_space(lx);
     lx->start = lx->cur;
+    if (lx->unterminated_comment) {
+        lx->unterminated_comment = false;
+        return error_at(lx, "unterminated block comment");
+    }
     if (at_end(lx)) return make(lx, T_EOF);
     char c = advance(lx);
     if (isalpha((unsigned char)c) || c == '_') {
@@ -195,4 +201,45 @@ const char *token_name(TokenType t) {
         case T_ERROR: return "error"; case T_EOF: return "end of input";
     }
     return "?";
+}
+
+/* Is this chunk of source syntactically complete - every (, [, { closed and
+ * no open string or block comment? The REPL and browser session use it to
+ * keep reading continuation lines instead of erroring on half a program. */
+bool fable_source_complete(const char *src) {
+    int parens = 0, brackets = 0, braces = 0;
+    for (const char *p = src; *p; p++) {
+        switch (*p) {
+            case '"':
+                p++;
+                while (*p && *p != '"') { if (*p == '\\' && p[1]) p++; p++; }
+                if (!*p) return false;   /* open string */
+                break;
+            case '#':
+                while (*p && *p != '\n') p++;
+                if (!*p) return true;
+                break;
+            case '/':
+                if (p[1] == '/') { while (*p && *p != '\n') p++; if (!*p) return true; }
+                else if (p[1] == '*') {
+                    int depth = 1;
+                    p += 2;
+                    while (*p && depth > 0) {
+                        if (p[0] == '/' && p[1] == '*') { depth++; p += 2; }
+                        else if (p[0] == '*' && p[1] == '/') { depth--; p += 2; }
+                        else p++;
+                    }
+                    if (depth > 0) return false;   /* open block comment */
+                    p--;
+                }
+                break;
+            case '(': parens++; break;
+            case ')': parens--; break;
+            case '[': brackets++; break;
+            case ']': brackets--; break;
+            case '{': braces++; break;
+            case '}': braces--; break;
+        }
+    }
+    return parens <= 0 && brackets <= 0 && braces <= 0;
 }

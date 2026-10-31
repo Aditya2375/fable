@@ -21,6 +21,8 @@ typedef enum {
     OP_EQUAL,
     OP_GREATER,
     OP_LESS,
+    OP_LTE,            /* real <= (NOT-less is wrong for NaN) */
+    OP_GTE,            /* real >= (NOT-greater is wrong for NaN) */
     OP_ADD,
     OP_SUB,
     OP_MUL,

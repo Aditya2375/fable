@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stdio.h>
 
 void varray_init(ValueArray *a) { a->items = NULL; a->count = 0; a->cap = 0; }
 
@@ -44,13 +45,30 @@ bool value_truthy(Value v) {
     return true;
 }
 
+/* Shortest round-trip number formatting: the printed form strtod()s back to
+ * the exact same double (so num(str(x)) == x). Integers under 1e15 print
+ * without a decimal point; -0 keeps its sign; nan/inf are words. Never casts
+ * an out-of-range double to long long (that is UB): the magnitude check runs
+ * before any cast. */
+void num_to_str(double v, char *buf, size_t n) {
+    if (isnan(v)) { snprintf(buf, n, "nan"); return; }
+    if (isinf(v)) { snprintf(buf, n, v > 0 ? "inf" : "-inf"); return; }
+    if (v == 0) { snprintf(buf, n, signbit(v) ? "-0" : "0"); return; }
+    if (fabs(v) < 1e15 && v == (double)(long long)v) {
+        snprintf(buf, n, "%lld", (long long)v);   /* 3, not 3.0 */
+        return;
+    }
+    for (int p = 1; p <= 17; p++) {
+        snprintf(buf, n, "%.*g", p, v);
+        if (strtod(buf, NULL) == v) return;
+    }
+    snprintf(buf, n, "%.17g", v);
+}
+
 static void print_num(FILE *out, double v) {
-    if (isnan(v)) { fprintf(out, "nan"); return; }
-    if (isinf(v)) { fprintf(out, v > 0 ? "inf" : "-inf"); return; }
-    if (v == (double)(long long)v && fabs(v) < 1e15)
-        fprintf(out, "%lld", (long long)v);   /* 3, not 3.0 */
-    else
-        fprintf(out, "%.14g", v);
+    char buf[40];
+    num_to_str(v, buf, sizeof buf);
+    fputs(buf, out);
 }
 
 void value_print(FILE *out, Value v) {

@@ -44,10 +44,11 @@
     <input id="in" placeholder='fable> try: print("hello" + " world");' disabled>
   </div>
   <p class="note">let / fn / if / while / for / return, closures, lists,
-  strings, and / or / not. Statements end with ';'. Expressions echo their
-  value, like the terminal REPL.</p>
+  strings, and / or / not. Statements end with ';'. Typed expressions echo
+  their value, like the terminal REPL; a line that leaves a bracket open
+  continues on the next line ("...").</p>
 </main>
-<script src="fable.js?v=2"></script>
+<script src="fable.js?v=3"></script>
 <script>
 const out = document.getElementById('out');
 const inp = document.getElementById('in');
@@ -68,6 +69,9 @@ function printCmd(t){
 function exec(src){
   M.ccall('fable_exec', null, ['string'], [src]);
 }
+function setEcho(on){
+  M.ccall('fable_set_echo', null, ['number'], [on ? 1 : 0]);
+}
 function runLine(line){
   printCmd('fable> ' + line);
   exec(line);
@@ -87,10 +91,12 @@ function runProgram(name){
   }
   const src = programs[name];
   const chunks = Array.isArray(src) ? src : [src];
+  setEcho(false);   /* whole programs print only what they print() */
   chunks.forEach(c => {
     printCmd('fable> ' + c.split('\n').join('\n...   '));
     exec(c);
   });
+  setEcho(true);
 }
 FableModule({ print, printErr }).then(m => {
   M = m;

@@ -21,6 +21,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: make stress
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make
+      - name: differential fuzz vs python3
+        run: python3 tests/fuzz.py --programs 300 --blobs 100
+      - name: byte fuzz under sanitizers
+        run: |
+          make clean
+          make EXTRA="-fsanitize=address,undefined,float-cast-overflow -fno-omit-frame-pointer"
+          python3 tests/fuzz.py --programs 50 --blobs 300
   wasm:
     runs-on: ubuntu-latest
     steps:

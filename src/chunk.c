@@ -86,6 +86,8 @@ static int dis_one(Chunk *c, int off, FILE *out) {
         case OP_SET_UPVALUE: return byteop(c, "OP_SET_UPVALUE", off, out);
         case OP_EQUAL: return simple("OP_EQUAL", off, out);
         case OP_GREATER: return simple("OP_GREATER", off, out);
+        case OP_LTE: return simple("OP_LTE", off, out);
+        case OP_GTE: return simple("OP_GTE", off, out);
         case OP_LESS: return simple("OP_LESS", off, out);
         case OP_ADD: return simple("OP_ADD", off, out);
         case OP_SUB: return simple("OP_SUB", off, out);

@@ -124,13 +124,8 @@ void obj_free(Obj *o) {
 }
 
 ObjString *string_of_double(double v) {
-    char buf[32];
-    if (isnan(v)) snprintf(buf, sizeof buf, "nan");
-    else if (isinf(v)) snprintf(buf, sizeof buf, v > 0 ? "inf" : "-inf");
-    else if (v == (double)(long long)v && fabs(v) < 1e15)
-        snprintf(buf, sizeof buf, "%lld", (long long)v);
-    else
-        snprintf(buf, sizeof buf, "%.14g", v);
+    char buf[40];
+    num_to_str(v, buf, sizeof buf);
     return string_copy(buf, (int)strlen(buf));
 }
 
@@ -151,6 +146,12 @@ static void print_function(FILE *out, ObjFunction *f) {
     fprintf(out, "<fn %.*s>", f->name->len, f->name->chars);
 }
 
+/* Ancestor stack for cycle detection while printing lists. Printing never
+ * allocates and the VM is single-threaded, so fixed statics are safe. */
+#define PRINT_DEPTH_MAX 64
+static const ObjList *print_stack[PRINT_DEPTH_MAX];
+static int print_depth;
+
 void obj_print(FILE *out, Obj *o, bool repr) {
     switch (o->type) {
         case OBJ_STRING: {
@@ -159,18 +160,24 @@ void obj_print(FILE *out, Obj *o, bool repr) {
                 Value v = OBJ_VAL(s);
                 value_fprint_repr(out, v);
             } else {
-                fprintf(out, "%.*s", s->len, s->chars);
+                fwrite(s->chars, 1, (size_t)s->len, out);   /* strings can hold NUL */
             }
             break;
         }
         case OBJ_LIST: {
             ObjList *l = (ObjList *)o;
+            for (int i = 0; i < print_depth; i++) {
+                if (print_stack[i] == l) { fprintf(out, "[...]"); return; }   /* cycle */
+            }
+            if (print_depth == PRINT_DEPTH_MAX) { fprintf(out, "..."); return; }   /* too deep */
+            print_stack[print_depth++] = l;
             fprintf(out, "[");
             for (int i = 0; i < l->items.count; i++) {
                 if (i) fprintf(out, ", ");
                 value_fprint_repr(out, l->items.items[i]);
             }
             fprintf(out, "]");
+            print_depth--;
             break;
         }
         case OBJ_FUNCTION: print_function(out, (ObjFunction *)o); break;

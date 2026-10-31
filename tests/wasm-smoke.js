@@ -33,13 +33,39 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
     run("fn bump() { c = c + 1; return c; }");
     run("bump(); bump();");
     r = run("print(bump());");
-    ok(r.out.includes("3"), "wasm: closure over shared global");
+    ok(r.out === "3\n", "wasm: closure over shared global (exact output, no echo leak)");
+
+    /* HIGH2 regression: the demo examples must print EXACTLY this - no
+     * echo leaking out of function or loop bodies. Example buttons run
+     * with echo off, like the page does. */
+    m.ccall("fable_set_echo", null, ["number"], [0]);
+    r = run("fn make_counter() {\n  let n = 0;\n  fn step() { n = n + 1; return n; }\n  return step;\n}\nlet mc = make_counter();\nprint(mc());\nprint(mc());\nlet md = make_counter();\nprint(md());\nprint(mc());");
+    ok(r.out === "1\n2\n1\n3\n", "wasm: closures example prints exactly 1 2 1 3");
+    r = run("let xs = [1, 2, 3];\npush(xs, 4);\nprint(xs);\nprint(xs[-1]);\nprint(pop(xs));\nlet squares = [];\nfor (let i = 0; i < 6; i = i + 1) {\n  push(squares, i * i);\n}\nprint(squares);");
+    ok(r.out === "[1, 2, 3, 4]\n4\n4\n[0, 1, 4, 9, 16, 25]\n", "wasm: lists example exact output");
+    r = run("for (let i = 1; i <= 15; i = i + 1) {\n  if (i % 15 == 0) { print(\"fizzbuzz\"); }\n  else if (i % 3 == 0) { print(\"fizz\"); }\n  else if (i % 5 == 0) { print(\"buzz\"); }\n  else { print(i); }\n}");
+    ok(r.out === "1\n2\nfizz\n4\nbuzz\nfizz\n7\n8\nfizz\nbuzz\n11\nfizz\n13\n14\nfizzbuzz\n", "wasm: fizzbuzz example exact output");
+    m.ccall("fable_set_echo", null, ["number"], [1]);
+
+    /* MED9: multi-line input accumulates across exec calls */
+    let rc2 = run("fn seven() {");
+    ok(rc2.rc === 2 && rc2.out.includes("..."), "wasm: incomplete input asks for more lines");
+    r = run("  return 7;\n}");
+    ok(r.rc === 0, "wasm: completed function runs");
+    r = run("print(seven());");
+    ok(r.out === "7\n", "wasm: multi-line definition works");
+
+    /* HIGH3/MED5 in the browser build */
+    r = run("let cyc = []; push(cyc, cyc); print(cyc);");
+    ok(r.out === "[[...]]\n[[...]]\n", "wasm: cyclic list prints [...] (push echo + print)");
+    r = run("print(1e300); print(-0.0); print(0/0 <= 1);");
+    ok(r.out === "1e+300\n-0\nfalse\n", "wasm: 1e300 / -0 / NaN <= exact");
 
     r = run("let xs = []; for (let i = 0; i < 5; i = i + 1) { push(xs, i * i); } print(xs);");
     ok(r.rc === 0 && r.out.includes("[0, 1, 4, 9, 16]"), "wasm: lists and loops");
 
     r = run("let x = ;");
-    ok(r.rc !== 0 && r.err.length > 0, "wasm: compile error reported");
+    ok(r.rc !== 0 && r.err.includes("<web>:1:"), "wasm: compile error names the source and line");
     r = run("print(1 + 1);");
     ok(r.rc === 0 && r.out.includes("2"), "wasm: session survives a compile error");
 

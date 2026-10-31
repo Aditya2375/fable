@@ -137,6 +137,203 @@ static void chunk_basics(void) {
     chunk_free(&c);
 }
 
+static char *run_capture2(const char *src, InterpretResult *res, char **err_out) {
+    char *buf = NULL;
+    size_t cap = 0;
+    char *ebuf = NULL;
+    size_t ecap = 0;
+    FILE *mem = open_memstream(&buf, &cap);
+    FILE *memerr = open_memstream(&ebuf, &ecap);
+    vm.out = mem;
+    vm.err = memerr;
+    InterpretResult r = interpret(src, "<test>");
+    fclose(mem);
+    fclose(memerr);
+    if (res) *res = r;
+    if (err_out) *err_out = ebuf;
+    else free(ebuf);
+    return buf;
+}
+
+/* critic round 1 regression tests */
+static void critic_r1(void) {
+    InterpretResult r;
+    char *out, *err;
+
+    /* HIGH1: indexing a freshly-concatenated string must not UAF under GC */
+    out = run_capture("print((\"he\" + \"llo\")[2]);", &r);
+    OK(r == INTERPRET_OK && strcmp(out, "l\n") == 0);
+    free(out);
+    out = run_capture("let s = \"abc\"; for (let i = 0; i < 3; i = i + 1) { print(s[i]); }", &r);
+    OK(r == INTERPRET_OK && strcmp(out, "a\nb\nc\n") == 0);
+    free(out);
+    out = run_capture("print([\"x\", \"y\"] + [\"z\"]);", &r);
+    OK(r == INTERPRET_OK && strcmp(out, "[\"x\", \"y\", \"z\"]\n") == 0);
+    free(out);
+
+    /* HIGH2: REPL echo stays at the top level of the script */
+    vm.repl = true;
+    out = run_capture("fn make_counter() {\n"
+                      "    let n = 0;\n"
+                      "    fn step() { n = n + 1; return n; }\n"
+                      "    return step;\n"
+                      "}\n"
+                      "let c = make_counter();\n"
+                      "print(c());\n"
+                      "print(c());\n", &r);
+    OK(r == INTERPRET_OK && strcmp(out, "1\n2\n") == 0);
+    free(out);
+    out = run_capture("let i = 0;\nwhile (i < 3) { print(i); i = i + 1; }\n", &r);
+    OK(r == INTERPRET_OK && strcmp(out, "0\n1\n2\n") == 0);
+    free(out);
+    out = run_capture("for (let j = 0; j < 3; j = j + 1) { print(j * 10); }\n", &r);
+    OK(r == INTERPRET_OK && strcmp(out, "0\n10\n20\n") == 0);
+    free(out);
+    vm.repl = false;
+
+    /* HIGH3: cyclic and deeply nested lists print safely */
+    out = run_capture("let l = []; push(l, l); print(l);", &r);
+    OK(r == INTERPRET_OK && strcmp(out, "[[...]]\n") == 0);
+    free(out);
+    out = run_capture("let l = []; push(l, l); print(str(l));", &r);
+    OK(r == INTERPRET_OK && strcmp(out, "[[...]]\n") == 0);
+    free(out);
+    out = run_capture("let a = []; push(a, a); let b = []; push(b, a); push(b, a); print(b);", &r);
+    OK(r == INTERPRET_OK && strcmp(out, "[[[...]], [[...]]]\n") == 0);
+    free(out);
+    out = run_capture("let l = 0; for (let i = 0; i < 100; i = i + 1) { l = [l]; } print(l); print(\"alive\");", &r);
+    OK(r == INTERPRET_OK && strstr(out, "...") != NULL && strstr(out, "alive") != NULL);
+    free(out);
+
+    /* MED4: real <= and >=, IEEE NaN semantics */
+    out = run_capture("print(1 <= 2); print(2 <= 2); print(3 <= 2);", &r);
+    OK(strcmp(out, "true\ntrue\nfalse\n") == 0);
+    free(out);
+    out = run_capture("print(1 >= 2); print(2 >= 2); print(3 >= 2);", &r);
+    OK(strcmp(out, "false\ntrue\ntrue\n") == 0);
+    free(out);
+    out = run_capture("print(0/0 <= 1); print(0/0 >= 1); print(0/0 < 1); print(0/0 > 1); print(0/0 == 0/0);", &r);
+    OK(strcmp(out, "false\nfalse\nfalse\nfalse\nfalse\n") == 0);
+    free(out);
+
+    /* MED5: huge doubles never hit UB casts */
+    out = run_capture("print(1e300); print(-1e300); print(str(1e300));", &r);
+    OK(r == INTERPRET_OK && strcmp(out, "1e+300\n-1e+300\n1e+300\n") == 0);
+    free(out);
+    out = run_capture2("let l = [1]; print(l[1e300]);", &r, &err);
+    OK(r == INTERPRET_RUNTIME_ERROR && strstr(err, "out of range") != NULL);
+    free(out); free(err);
+    out = run_capture2("print(\"ab\"[1e300]);", &r, &err);
+    OK(r == INTERPRET_RUNTIME_ERROR && strstr(err, "out of range") != NULL);
+    free(out); free(err);
+    out = run_capture2("print(\"ab\"[-1e300]);", &r, &err);
+    OK(r == INTERPRET_RUNTIME_ERROR && strstr(err, "out of range") != NULL);
+    free(out); free(err);
+
+    /* MED6: deep nesting is a clean compile error */
+    {
+        static char deep[3000];
+        int off = 0;
+        for (int i = 0; i < 600; i++) off += snprintf(deep + off, sizeof deep - (size_t)off, "(");
+        off += snprintf(deep + off, sizeof deep - (size_t)off, "1");
+        for (int i = 0; i < 600; i++) off += snprintf(deep + off, sizeof deep - (size_t)off, ")");
+        snprintf(deep + off, sizeof deep - (size_t)off, ";");
+        out = run_capture2(deep, &r, &err);
+        OK(r == INTERPRET_COMPILE_ERROR && strstr(err, "nested too deeply") != NULL);
+        free(out); free(err);
+    }
+    {
+        static char deepb[8000];
+        int off = snprintf(deepb, sizeof deepb, "if (true) {\n");
+        for (int i = 0; i < 300; i++) off += snprintf(deepb + off, sizeof deepb - (size_t)off, "if (true) {\n");
+        off += snprintf(deepb + off, sizeof deepb - (size_t)off, "print(1);\n");
+        for (int i = 0; i < 301; i++) off += snprintf(deepb + off, sizeof deepb - (size_t)off, "}\n");
+        out = run_capture2(deepb, &r, &err);
+        OK(r == INTERPRET_COMPILE_ERROR && strstr(err, "nested too deeply") != NULL);
+        free(out); free(err);
+    }
+
+    /* MED7: recursion works well past 64 frames and fails gracefully */
+    out = run_capture("fn f(n) { if (n == 0) { return 0; } return f(n - 1) + 1; } print(f(900));", &r);
+    OK(r == INTERPRET_OK && strcmp(out, "900\n") == 0);
+    free(out);
+    out = run_capture2("fn f(n) { if (n == 0) { return 0; } return f(n - 1) + 1; } print(f(5000));", &r, &err);
+    OK(r == INTERPRET_RUNTIME_ERROR && strstr(err, "stack overflow") != NULL);
+    free(out); free(err);
+
+    /* MED8: -disasm dumps bytecode */
+    vm.disasm = true;
+    out = run_capture("print(1 + 2);", &r);
+    OK(r == INTERPRET_OK && strstr(out, "OP_ADD") != NULL && strstr(out, "3") != NULL);
+    free(out);
+    vm.disasm = false;
+
+    /* MED9: source completeness scan for REPL continuation */
+    OK(fable_source_complete("print(1);") == true);
+    OK(fable_source_complete("fn f() {") == false);
+    OK(fable_source_complete("fn f() {}") == true);
+    OK(fable_source_complete("let x = [1, 2") == false);
+    OK(fable_source_complete("let x = [1, 2]") == true);
+    OK(fable_source_complete("\"abc") == false);
+    OK(fable_source_complete("\"a{b}c\"") == true);
+    OK(fable_source_complete("/* never") == false);
+    OK(fable_source_complete("/* fine */ print(1);") == true);
+    OK(fable_source_complete("let s = \"}\";") == true);
+
+    /* LOW13: long number literals are not truncated */
+    out = run_capture("print(10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000);", &r);
+    OK(r == INTERPRET_OK && strcmp(out, "1e+100\n") == 0);
+    free(out);
+
+    /* LOW14: unterminated block comment is a compile error */
+    out = run_capture2("print(1); /* never closed", &r, &err);
+    OK(r == INTERPRET_COMPILE_ERROR && strstr(err, "unterminated block comment") != NULL);
+    free(out); free(err);
+
+    /* LOW16: errors name the source */
+    out = run_capture2("let x = ;", &r, &err);
+    OK(r == INTERPRET_COMPILE_ERROR && strstr(err, "<test>:1:") != NULL);
+    free(out); free(err);
+    out = run_capture2("print(undefined_thing);", &r, &err);
+    OK(r == INTERPRET_RUNTIME_ERROR && strstr(err, "<test>:1:") != NULL);
+    free(out); free(err);
+
+    /* LOW17: negative zero keeps its sign */
+    out = run_capture("print(-0.0); print(0.0); print(-0.0 == 0.0);", &r);
+    OK(strcmp(out, "-0\n0\ntrue\n") == 0);
+    free(out);
+
+    /* LOW18: strings with embedded NUL print in full */
+    {
+        int paused = pause_gc();
+        ObjString *nul = string_copy("a\0b", 3);
+        char *buf = NULL;
+        size_t cap = 0;
+        FILE *mem = open_memstream(&buf, &cap);
+        value_print(mem, OBJ_VAL(nul));
+        fclose(mem);
+        OK(cap == 3 && memcmp(buf, "a\0b", 3) == 0);
+        free(buf);
+        resume_gc(paused);
+    }
+
+    /* LOW19: num(str(x)) round-trips exactly */
+    out = run_capture("print(num(str(0.1)) == 0.1); print(num(str(1/3)) == 1/3); print(num(str(1e300)) == 1e300); print(num(str(-0.0)) == 0);", &r);
+    OK(strcmp(out, "true\ntrue\ntrue\ntrue\n") == 0);
+    free(out);
+    out = run_capture("print(0.1 + 0.2); print(2/3);", &r);
+    OK(strcmp(out, "0.30000000000000004\n0.6666666666666666\n") == 0);
+    free(out);
+
+    /* LOW20: str(list) renders exactly like print(list) */
+    out = run_capture("print(str([1, \"a\", 2.5, true, nil]));", &r);
+    OK(strcmp(out, "[1, \"a\", 2.5, true, nil]\n") == 0);
+    free(out);
+    out = run_capture("let l = []; push(l, l); print(str(l) == \"[[...]]\");", &r);
+    OK(strcmp(out, "true\n") == 0);
+    free(out);
+}
+
 static void repl_echo(void) {
     /* REPL mode echoes expression statements, but nil stays silent so
      * print() calls don't trail a nil. */
@@ -300,6 +497,7 @@ int main(void) {
     values_basics();
     table_basics();
     chunk_basics();
+    critic_r1();
     repl_echo();
     end_to_end();
     /* GC: allocate a pile of garbage, force a collection, keep working */

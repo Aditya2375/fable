@@ -1,5 +1,6 @@
 /* fable: the interpreter front end - REPL and script runner. */
 #include "vm.h"
+#include "lexer.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -46,6 +47,7 @@ int main(int argc, char **argv) {
     }
 
     vm_init(stdout, stderr);
+    vm.disasm = disasm;
     int rc = 0;
 
     if (one) {
@@ -60,25 +62,39 @@ int main(int argc, char **argv) {
         free(src);
         rc = r == INTERPRET_OK ? 0 : 1;
     } else {
-        /* REPL: expression statements echo their value */
+        /* REPL: top-level expression statements echo their value; input that
+         * leaves a bracket, string or block comment open continues on the
+         * next line with a "... " prompt */
         vm.repl = true;
         int interactive = isatty(0);
         char line[4096];
+        char pending[65536];
+        pending[0] = '\0';
         for (;;) {
-            if (interactive) { printf("fable> "); fflush(stdout); }
+            if (interactive) {
+                printf(pending[0] ? "... " : "fable> ");
+                fflush(stdout);
+            }
             if (!fgets(line, sizeof line, stdin)) break;
             if (!strchr(line, '\n') && !feof(stdin)) {
                 int ch; while ((ch = getchar()) != '\n' && ch != EOF) {}
                 fprintf(stderr, "line too long\n");
                 continue;
             }
-            interpret(line, "<repl>");
+            if (strlen(pending) + strlen(line) >= sizeof pending - 1) {
+                fprintf(stderr, "input too long\n");
+                pending[0] = '\0';
+                continue;
+            }
+            strcat(pending, line);
+            if (!fable_source_complete(pending)) continue;   /* read more lines */
+            interpret(pending, "<repl>");
             vm.had_runtime_error = false;
+            pending[0] = '\0';
         }
         if (interactive) printf("\n");
     }
 
     vm_free();
-    (void)disasm;
     return rc;
 }

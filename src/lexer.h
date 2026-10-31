@@ -33,9 +33,11 @@ typedef struct {
     int line;
     Token error;      /* first lex error, sticky */
     bool failed;
+    bool unterminated_comment;
 } Lexer;
 
 void lexer_init(Lexer *lx, const char *src);
+bool fable_source_complete(const char *src);
 Token lexer_next(Lexer *lx);
 const char *token_name(TokenType t);
 

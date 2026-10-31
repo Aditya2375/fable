@@ -53,6 +53,7 @@ typedef struct {
 bool values_equal(Value a, Value b);
 bool value_truthy(Value v);
 void value_print(FILE *out, Value v);   /* user-facing rendering */
+void num_to_str(double v, char *buf, size_t n); /* shortest round-trip form */
 void value_fprint_repr(FILE *out, Value v); /* inside lists: strings quoted */
 
 /* ---- dynamic value array (constants, list elements) ---- */

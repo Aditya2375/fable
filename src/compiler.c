@@ -41,6 +41,9 @@ typedef struct {
     bool panic;
     Compiler *compiler;
     bool repl_mode;
+    const char *src_name;
+    int expr_depth;   /* guards C-stack recursion in parse_precedence */
+    int fn_depth;     /* guards C-stack recursion in nested fn bodies */
 } Parser;
 
 static Parser P;
@@ -54,12 +57,13 @@ static void error_at(Token *t, const char *fmt, ...) {
     char msg[256];
     vsnprintf(msg, sizeof msg, fmt, ap);
     va_end(ap);
+    const char *name = P.src_name ? P.src_name : "<script>";
     if (t->type == T_EOF)
-        fprintf(vm.err, "line %d, at end: %s\n", t->line, msg);
+        fprintf(vm.err, "%s:%d: at end: %s\n", name, t->line, msg);
     else if (t->type == T_ERROR)
-        fprintf(vm.err, "line %d: %.*s\n", t->line, t->len, t->start);
+        fprintf(vm.err, "%s:%d: %.*s\n", name, t->line, t->len, t->start);
     else
-        fprintf(vm.err, "line %d, at '%.*s': %s\n", t->line, t->len, t->start, msg);
+        fprintf(vm.err, "%s:%d: at '%.*s': %s\n", name, t->line, t->len, t->start, msg);
 }
 
 static void advance(void) {
@@ -147,7 +151,12 @@ static ObjFunction *compiler_end(void) {
 }
 
 /* ---- scope + locals ---- */
-static void begin_scope(void) { P.compiler->scope_depth++; }
+#define SCOPE_DEPTH_MAX 256
+static void begin_scope(void) {
+    P.compiler->scope_depth++;
+    if (P.compiler->scope_depth > SCOPE_DEPTH_MAX)
+        error_at(&P.prev, "blocks nested too deeply (limit %d)", SCOPE_DEPTH_MAX);
+}
 static void end_scope(void) {
     P.compiler->scope_depth--;
     while (P.compiler->local_count > 0 &&
@@ -248,11 +257,20 @@ typedef struct {
 static Rule rules[T_EOF + 1];
 static Rule *rule(TokenType t) { return &rules[t]; }
 
+#define EXPR_DEPTH_MAX 512   /* deeper nesting is a compile error, not a crash */
+#define FN_DEPTH_MAX 128
+
 static void parse_precedence(Precedence prec) {
+    if (P.expr_depth >= EXPR_DEPTH_MAX) {
+        error_at(&P.prev, "expression nested too deeply (limit %d)", EXPR_DEPTH_MAX);
+        return;
+    }
+    P.expr_depth++;
     advance();
     PrefixFn prefix = rule(P.prev.type)->prefix;
     if (!prefix) {
         error_at(&P.prev, "expected an expression, got %s", token_name(P.prev.type));
+        P.expr_depth--;
         return;
     }
     bool can_assign = prec <= PREC_ASSIGN;
@@ -263,6 +281,7 @@ static void parse_precedence(Precedence prec) {
     }
     if (can_assign && match(T_EQ))
         error_at(&P.prev, "invalid assignment target");
+    P.expr_depth--;
 }
 
 static void expression(void) { parse_precedence(PREC_ASSIGN); }
@@ -270,11 +289,11 @@ static void expression(void) { parse_precedence(PREC_ASSIGN); }
 /* ---- prefix parsers ---- */
 static void number(bool can_assign) {
     (void)can_assign;
-    char buf[64];
-    int n = P.prev.len < 63 ? P.prev.len : 63;
-    memcpy(buf, P.prev.start, (size_t)n);
-    buf[n] = '\0';
+    char *buf = GROW_ARRAY(char, NULL, P.prev.len + 1);   /* no length cap */
+    memcpy(buf, P.prev.start, (size_t)P.prev.len);
+    buf[P.prev.len] = '\0';
     emit16(OP_CONSTANT, make_constant(NUM_VAL(strtod(buf, NULL))));
+    fable_realloc(buf, 0);
 }
 
 static void string_lit(bool can_assign) {
@@ -373,9 +392,9 @@ static void binary(bool can_assign) {
         case T_EQEQ: emit(OP_EQUAL); break;
         case T_BANGEQ: emit(OP_EQUAL); emit(OP_NOT); break;
         case T_LT: emit(OP_LESS); break;
-        case T_LTE: emit(OP_GREATER); emit(OP_NOT); break;   /* a<=b is !(a>b) */
+        case T_LTE: emit(OP_LTE); break;
         case T_GT: emit(OP_GREATER); break;
-        case T_GTE: emit(OP_LESS); emit(OP_NOT); break;      /* a>=b is !(a<b) */
+        case T_GTE: emit(OP_GTE); break;
         default: break;
     }
 }
@@ -468,6 +487,7 @@ static void function_body(FnKind kind, Token name_tok) {
         emit(c.upvalues[i].is_local ? 1 : 0);
         emit(c.upvalues[i].index);
     }
+    P.fn_depth--;
 }
 
 static void fn_expr(bool can_assign) {
@@ -484,7 +504,10 @@ static void fn_expr(bool can_assign) {
 static void expr_statement(void) {
     expression();
     consume(T_SEMICOLON, "expected ';' after expression");
-    emit(P.repl_mode ? OP_PRINT_POP : OP_POP);
+    /* REPL echo is only for statements typed at the prompt's top level;
+     * inside functions, loops and blocks nothing echoes */
+    bool echo = P.repl_mode && P.compiler->kind == FN_SCRIPT && P.compiler->scope_depth == 0;
+    emit(echo ? OP_PRINT_POP : OP_POP);
 }
 
 static void var_declaration(void) {
@@ -658,7 +681,10 @@ static void rules_init(void) {
     rules[T_FN]       = (Rule){ fn_expr, NULL, PREC_NONE };
 }
 
-ObjFunction *compile(const char *src, bool repl_mode) {
+ObjFunction *compile(const char *src, bool repl_mode, const char *src_name) {
+    P.src_name = src_name;
+    P.expr_depth = 0;
+    P.fn_depth = 0;
     static bool rules_ready = false;
     if (!rules_ready) { rules_init(); rules_ready = true; }
     lexer_init(&P.lx, src);

@@ -27,9 +27,8 @@ const char *type_name(Value v) {
 }
 
 static const char *fmt_num(double v) {
-    static char buf[32];
-    if (v == (double)(long long)v && fabs(v) < 1e15) snprintf(buf, sizeof buf, "%lld", (long long)v);
-    else snprintf(buf, sizeof buf, "%.14g", v);
+    static char buf[40];
+    num_to_str(v, buf, sizeof buf);
     return buf;
 }
 
@@ -135,15 +134,19 @@ static Value n_str(int argc, Value *argv, bool *err, char *eb, int ec) {
     if (IS_BOOL(argv[0])) return OBJ_VAL(string_copy(AS_BOOL(argv[0]) ? "true" : "false", AS_BOOL(argv[0]) ? 4 : 5));
     if (IS_NIL(argv[0])) return OBJ_VAL(string_copy("nil", 3));
     if (IS_OBJ(argv[0]) && AS_OBJ(argv[0])->type == OBJ_STRING) return argv[0];
-    /* functions and lists get their display form */
-    char buf[64];
+    /* functions and lists get their display form; a list renders exactly
+     * like print() would render it */
     if (IS_OBJ(argv[0]) && AS_OBJ(argv[0])->type == OBJ_LIST) {
-        ObjList *l = AS_LIST(argv[0]);
-        snprintf(buf, sizeof buf, "[list of %d]", l->items.count);
-    } else {
-        snprintf(buf, sizeof buf, "<fn>");
+        char *buf = NULL;
+        size_t cap = 0;
+        FILE *mem = open_memstream(&buf, &cap);
+        value_print(mem, argv[0]);   /* argv stays rooted on the VM stack */
+        fclose(mem);
+        ObjString *r = string_copy(buf, (int)cap);
+        free(buf);
+        return OBJ_VAL(r);
     }
-    return OBJ_VAL(string_copy(buf, (int)strlen(buf)));
+    return OBJ_VAL(string_copy("<fn>", 4));
 }
 static Value n_num(int argc, Value *argv, bool *err, char *eb, int ec) {
     (void)argc;
@@ -307,6 +310,8 @@ static void close_upvalues(Value *last) {
 
 static bool is_iterable_index(ObjList *l, double idx, int *out) {
     if (idx != floor(idx) || isnan(idx)) return false;
+    /* out-of-range doubles must never reach the (long long) cast (UB) */
+    if (idx > 2147483647.0 || idx < -2147483648.0) return false;
     long long i = (long long)idx;
     if (i < 0) i += l->items.count;   /* negative indexes from the end */
     if (i < 0 || i >= l->items.count) return false;
@@ -396,6 +401,8 @@ static InterpretResult run(void) {
             }
             case OP_GREATER: COMPARE_NUM(>, ">"); break;
             case OP_LESS: COMPARE_NUM(<, "<"); break;
+            case OP_LTE: COMPARE_NUM(<=, "<="); break;
+            case OP_GTE: COMPARE_NUM(>=, ">="); break;
             case OP_ADD: {
                 Value b = vm_peek(0), a = vm_peek(1);
                 if (IS_NUM(a) && IS_NUM(b)) {
@@ -506,8 +513,10 @@ static InterpretResult run(void) {
                 break;
             }
             case OP_INDEX_GET: {
-                Value idx = vm_pop();
-                Value seq = vm_pop();
+                /* peek, don't pop: the result allocation must not let the GC
+                 * free the sequence out from under us */
+                Value idx = vm_peek(0);
+                Value seq = vm_peek(1);
                 if (!IS_OBJ(seq)) goto bad_index;
                 if (AS_OBJ(seq)->type == OBJ_LIST) {
                     ObjList *l = AS_LIST(seq);
@@ -517,19 +526,27 @@ static InterpretResult run(void) {
                         runtime_error("list index %s out of range (len %d)", fmt_num(AS_NUM(idx)), l->items.count);
                         goto rt_fail;
                     }
-                    vm_push(l->items.items[i]);
+                    Value got = l->items.items[i];
+                    vm_pop(); vm_pop();
+                    vm_push(got);
                 } else if (AS_OBJ(seq)->type == OBJ_STRING) {
                     ObjString *s = AS_STRING(seq);
                     if (!IS_NUM(idx)) goto bad_index_type;
                     double d = AS_NUM(idx);
-                    long long i = (long long)d;
                     if (d != floor(d) || isnan(d)) goto bad_index_type;
+                    if (d > 2147483647.0 || d < -2147483648.0) {
+                        runtime_error("string index %s out of range (len %d)", fmt_num(d), s->len);
+                        goto rt_fail;
+                    }
+                    long long i = (long long)d;
                     if (i < 0) i += s->len;
                     if (i < 0 || i >= s->len) {
                         runtime_error("string index %s out of range (len %d)", fmt_num(d), s->len);
                         goto rt_fail;
                     }
-                    vm_push(OBJ_VAL(string_copy(s->chars + i, 1)));
+                    ObjString *ch = string_copy(s->chars + i, 1);   /* seq still rooted */
+                    vm_pop(); vm_pop();
+                    vm_push(OBJ_VAL(ch));
                 } else goto bad_index;
                 break;
             bad_index:
@@ -569,7 +586,8 @@ static InterpretResult run(void) {
 
 rt_fail:
     if (vm.had_runtime_error) {
-        fprintf(vm.err, "line %d: %s\n",
+        fprintf(vm.err, "%s:%d: %s\n",
+                vm.src_name ? vm.src_name : "<script>",
                 frame->ip > frame->closure->fn->chunk.code
                     ? frame->closure->fn->chunk.lines[(int)(frame->ip - frame->closure->fn->chunk.code) - 1] : 0,
                 vm.errbuf);
@@ -588,16 +606,17 @@ rt_fail:
 }
 
 InterpretResult interpret(const char *src, const char *chunk_name) {
-    (void)chunk_name;
-    ObjFunction *fn = compile(src, vm.repl);
+    vm.src_name = chunk_name;
+    ObjFunction *fn = compile(src, vm.repl, chunk_name);
     if (!fn) return INTERPRET_COMPILE_ERROR;
+    if (vm.disasm) chunk_disassemble(&fn->chunk, chunk_name, vm.out);
     vm_push(OBJ_VAL(fn));
     ObjClosure *c = closure_new(fn);
     vm_pop();
     vm_push(OBJ_VAL(c));
     vm.had_runtime_error = false;
     if (!call_value(OBJ_VAL(c), 0)) {
-        fprintf(vm.err, "line 0: %s\n", vm.errbuf);
+        fprintf(vm.err, "%s:0: %s\n", vm.src_name, vm.errbuf);
         vm_pop();
         return INTERPRET_RUNTIME_ERROR;
     }

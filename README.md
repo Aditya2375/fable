@@ -3,8 +3,8 @@
 fable is a small, complete programming language: a tree-walk-free, bytecode
 interpreter written in C11 with no dependencies beyond libc and libm. It has
 lexically scoped variables, first-class functions, closures with shared
-upvalues, lists, strings, and a mark-sweep garbage collector. The whole
-implementation is about 5,000 lines of C.
+upvalues, lists, strings, and a mark-sweep garbage collector. The interpreter core is
+2687 lines of C.
 
 Try it in your browser: **https://aditya2375.github.io/fable/** - the same C
 compiled to WebAssembly, running entirely on your machine.
@@ -14,9 +14,10 @@ compiled to WebAssembly, running entirely on your machine.
 ```sh
 make            # builds build/fable and build/test-unit
 make test       # unit suite + golden cases + docs check
-./build/fable                  # REPL
+./build/fable                  # REPL (multi-line input continues with a "... " prompt)
 ./build/fable script.fable     # run a file
 ./build/fable -c 'print(1+2)'  # run a snippet
+./build/fable -disasm x.fable  # dump the compiled bytecode, then run
 ```
 
 ```fable
@@ -49,8 +50,8 @@ Only `nil` and `false` are falsy. `0` and `""` are truthy.
 
 `let` declares; assignment without `let` updates an existing binding. Blocks
 (`{ ... }`), function bodies, and `for` headers create lexical scopes.
-Reading an undeclared variable is a compile error; assigning to one is a
-runtime error.
+Reading or assigning an undeclared variable is a runtime error (globals are
+resolved when the program runs, not when it is compiled).
 
 ### Functions and closures
 
@@ -108,8 +109,12 @@ identity.
 
 ### Comments and syntax
 
-`#` and `//` start line comments; `/* ... */` is a block comment.
-Statements end with `;`.
+`#` and `//` start line comments; `/* ... */` is a block comment (block
+comments nest and must be closed). Statements end with `;`. In the REPL and
+the browser demo, a line that leaves a bracket, string or comment open
+continues on the next line with a `... ` prompt.
+
+`str(list)` renders a list exactly the way `print` would, cycles included.
 
 ## Errors
 
@@ -118,8 +123,10 @@ a message plus the line. Both exit with a nonzero status and clean up the VM.
 
 ```
 $ fable -c 'let x = ;'
-[line 1] error at ';': expected expression
+<cmdline>:1: at ';': expected an expression, got ';'
 ```
+
+Every error names its source and line: `file.fable:12: message`.
 
 ## Honest limits
 
@@ -130,14 +137,20 @@ fable is deliberately small. It does **not** have:
 - string comparison operators beyond `==` / `!=` (no `<` on strings)
 - modules, imports, classes, or exceptions
 - a standard library beyond the built-ins above
-- tail-call optimization (deep recursion exhausts the C stack via the VM's
-  call frames; fib(25) is fine, fib(10^6) is not)
+- tail-call optimization
+
+Resource limits, all enforced with clean errors rather than crashes: call
+depth is capped at 1024 frames (65536 stack values); expressions nest at
+most 512 levels, blocks 256, function definitions 128; list printing detects
+cycles (`[[...]]`) and caps nesting at 64 levels (`...`).
 
 Named function *expressions* (`let f = fn g() {...}`) bind only `f`; the inner
 name is display metadata, not a self-reference. Use a `fn` declaration or a
 `let` binding for recursion.
 
 Numbers are doubles, so integers above 2^53 lose precision, as in JavaScript.
+Printing uses the shortest form that round-trips: `num(str(x)) == x` always
+holds, `-0` keeps its sign, and `nan`/`inf`/`-inf` print as words.
 
 ## How it works
 
@@ -165,19 +178,24 @@ source → lexer → single-pass Pratt compiler → bytecode → stack VM
 ## Testing
 
 - `make test` runs everything:
-  - a C unit suite (`tests/unit/test-unit.c`) with **476 checks** covering
+  - a C unit suite (`tests/unit/test-unit.c`) with **518 checks** covering
     the lexer, values, hash table, bytecode chunks, and end-to-end programs
     (closures, recursion, shared upvalues, lists, error paths, IEEE edge
-    cases);
+    cases, GC-safety patterns, and every resource limit above);
   - a golden suite (`tests/cases/`, 11 golden programs) diffing real
     interpreter output against committed expectations;
-  - `tests/check-docs.sh`, which fails if this README's test counts drift.
-- `make sanitize` re-runs the whole suite under AddressSanitizer and
-  UndefinedBehaviorSanitizer.
+  - `tests/check-docs.sh`, which fails if this README's test counts or line
+    count drift.
+- `make sanitize` re-runs the whole suite under AddressSanitizer,
+  UndefinedBehaviorSanitizer, and float-cast-overflow checking.
 - `make stress` re-runs it with the GC collecting on every allocation.
+- `python3 tests/fuzz.py` generates random integer-arithmetic programs and
+  diffs fable's output against python3 (300 programs), plus 100 random byte
+  blobs that must never crash the interpreter (also run under the sanitizers
+  in CI).
 
-The CI workflow runs the unit, golden, sanitizer, and GC-stress suites plus a
-WebAssembly build on every push.
+The CI workflow runs the unit, golden, sanitizer, GC-stress, and fuzz suites
+plus a WebAssembly build on every push.
 
 ## Layout
 
