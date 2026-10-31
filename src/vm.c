@@ -352,8 +352,12 @@ static InterpretResult run(void) {
             case OP_POP: vm_pop(); break;
             case OP_PRINT_POP: {
                 Value v = vm_pop();
-                value_print(vm.out, v);
-                fprintf(vm.out, "\n");
+                /* REPL echo skips nil: print() and void-ish calls would
+                 * otherwise spam a nil after their real output. */
+                if (!IS_NIL(v)) {
+                    value_print(vm.out, v);
+                    fprintf(vm.out, "\n");
+                }
                 break;
             }
             case OP_DEF_GLOBAL: {

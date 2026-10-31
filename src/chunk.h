@@ -10,7 +10,7 @@ typedef enum {
     OP_TRUE,
     OP_FALSE,
     OP_POP,
-    OP_PRINT_POP,    /* REPL: pop and echo the value */
+    OP_PRINT_POP,    /* REPL: pop and echo the value (nil stays silent) */
     OP_DEF_GLOBAL,   /* u16 name constant */
     OP_GET_GLOBAL,
     OP_SET_GLOBAL,

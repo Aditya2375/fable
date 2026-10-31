@@ -137,6 +137,25 @@ static void chunk_basics(void) {
     chunk_free(&c);
 }
 
+static void repl_echo(void) {
+    /* REPL mode echoes expression statements, but nil stays silent so
+     * print() calls don't trail a nil. */
+    vm.repl = true;
+    InterpretResult r;
+    char *out = run_capture("1 + 2;", &r);
+    OK(r == INTERPRET_OK);
+    OK(strcmp(out, "3\n") == 0);
+    free(out);
+    out = run_capture("print(\"x\");", &r);
+    OK(r == INTERPRET_OK);
+    OK(strcmp(out, "x\n") == 0);
+    free(out);
+    out = run_capture("\"bare\";", &r);
+    OK(strcmp(out, "bare\n") == 0);
+    free(out);
+    vm.repl = false;
+}
+
 static void end_to_end(void) {
     InterpretResult r;
     char *out;
@@ -281,6 +300,7 @@ int main(void) {
     values_basics();
     table_basics();
     chunk_basics();
+    repl_echo();
     end_to_end();
     /* GC: allocate a pile of garbage, force a collection, keep working */
     for (int i = 0; i < 2000; i++) {

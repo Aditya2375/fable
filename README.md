@@ -165,7 +165,7 @@ source → lexer → single-pass Pratt compiler → bytecode → stack VM
 ## Testing
 
 - `make test` runs everything:
-  - a C unit suite (`tests/unit/test-unit.c`) with **471 checks** covering
+  - a C unit suite (`tests/unit/test-unit.c`) with **476 checks** covering
     the lexer, values, hash table, bytecode chunks, and end-to-end programs
     (closures, recursion, shared upvalues, lists, error paths, IEEE edge
     cases);
