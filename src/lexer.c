@@ -8,6 +8,7 @@ void lexer_init(Lexer *lx, const char *src) {
     lx->start = src;
     lx->cur = src;
     lx->line = 1;
+    lx->last_token_line = 1;
     lx->failed = false;
     lx->unterminated_comment = false;
 }
@@ -143,7 +144,14 @@ Token lexer_next(Lexer *lx) {
         lx->unterminated_comment = false;
         return error_at(lx, "unterminated block comment");
     }
-    if (at_end(lx)) return make(lx, T_EOF);
+    if (at_end(lx)) {
+        /* "at end" errors point at the last real token's line, not past a
+         * trailing newline - terminal REPL, -c and the wasm demo agree. */
+        Token tok = make(lx, T_EOF);
+        tok.line = lx->last_token_line;
+        return tok;
+    }
+    lx->last_token_line = lx->line;
     char c = advance(lx);
     if (isalpha((unsigned char)c) || c == '_') {
         while (isalnum((unsigned char)peek(lx)) || peek(lx) == '_') advance(lx);

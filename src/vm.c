@@ -34,17 +34,33 @@ static const char *fmt_num(double v) {
 
 static int vm_stack_depth(void) { return (int)(vm.top - vm.stack); }
 
-/* ---- allocator with GC hook ---- */
+/* ---- allocator with GC hook ----
+ * Every block carries a 16-byte header holding its requested size, so
+ * bytes_allocated tracks the LIVE heap: frees and shrinks decrement it, and
+ * the GC threshold follows what is actually alive instead of ratcheting up
+ * with total-ever-allocated over a long session. The header keeps payloads
+ * max_align_t-aligned; memcpy avoids aliasing UB. */
+#define ALLOC_HDR 16
 void *fable_realloc(void *p, size_t new_size) {
-    if (new_size == 0) { free(p); return NULL; }
-    if (vm.gc_paused == 0 && vm.bytes_allocated > vm.next_gc) gc_collect();
+    size_t old = 0;
+    if (p) memcpy(&old, (char *)p - ALLOC_HDR, sizeof old);
+    if (new_size == 0) {
+        /* the free path never triggers a collection: sweep calls this */
+        if (p) {
+            vm.bytes_allocated = old > vm.bytes_allocated ? 0 : vm.bytes_allocated - old;
+            free((char *)p - ALLOC_HDR);
+        }
+        return NULL;
+    }
+    if (new_size > old && vm.gc_paused == 0 && vm.bytes_allocated > vm.next_gc) gc_collect();
 #ifdef FABLE_GC_STRESS
     if (vm.gc_paused == 0) gc_collect();
 #endif
-    void *r = realloc(p, new_size);
-    if (!r) { fprintf(stderr, "fable: out of memory\n"); exit(70); }
-    vm.bytes_allocated += new_size;   /* approximates; shrink not tracked */
-    return r;
+    void *base = realloc(p ? (char *)p - ALLOC_HDR : NULL, new_size + ALLOC_HDR);
+    if (!base) { fprintf(stderr, "fable: out of memory\n"); exit(70); }
+    memcpy(base, &new_size, sizeof new_size);
+    vm.bytes_allocated += new_size - old;
+    return (char *)base + ALLOC_HDR;
 }
 
 void *fable_alloc(size_t bytes) { return fable_realloc(NULL, bytes); }

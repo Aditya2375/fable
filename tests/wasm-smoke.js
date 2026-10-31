@@ -25,6 +25,11 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
     r = run("1 + 2;");
     ok(r.out.includes("3"), "wasm: expression echoes in session mode");
 
+    /* L1 regression: a trailing-newline EOF error reports the content line,
+     * matching the terminal REPL */
+    r = run("1 + 1");
+    ok(r.rc === 1 && r.err.includes("<web>:1: at end"), "wasm: EOF error reports the content line");
+
     run("fn square(x) { return x * x; }");
     r = run("print(square(9));");
     ok(r.out.includes("81"), "wasm: definitions persist across calls");

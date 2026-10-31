@@ -4,7 +4,7 @@ fable is a small, complete programming language: a tree-walk-free, bytecode
 interpreter written in C11 with no dependencies beyond libc and libm. It has
 lexically scoped variables, first-class functions, closures with shared
 upvalues, lists, strings, and a mark-sweep garbage collector. The interpreter core is
-2791 lines of C.
+2819 lines of C.
 
 Try it in your browser: **https://aditya2375.github.io/fable/** - the same C
 compiled to WebAssembly, running entirely on your machine.
@@ -117,7 +117,8 @@ continues on the next line with a `... ` prompt.
 `str(v)` renders any value exactly the way `print` would (lists, cycles
 included; `str(f)` is `<fn name>`).
 
-`num()` is strict: it accepts decimal numbers (`-12.5e3`) and the exact
+`num()` is strict: it accepts exactly the source-literal grammar
+(`-12.5e3` - no `+` sign, digits on both sides of the point) plus the exact
 words `inf`/`nan` (so `num(str(x))` round-trips - except `nan`, which by
 IEEE rule never equals itself), and rejects whitespace, hex, empty strings
 and trailing garbage.
@@ -154,8 +155,10 @@ fable is deliberately small. It does **not** have:
 Resource limits, each enforced with a clean error (never a crash) and each
 covered by a unit test: call depth is capped at 1024 frames (65536 stack
 values, `stack overflow` past that, traces capped at 12 frames plus a
-`... N more frames` summary); expressions nest at most 512 levels, blocks
-256, statement chains 256, function definitions 256; list printing detects
+`... N more frames` summary); expressions nest at most 512 levels - each
+nested construct (parentheses, list brackets, unary operators) costs
+exactly one level, mixed or not - blocks 256, statement chains 256,
+function definitions 256; list printing detects
 cycles (`[[...]]`) and caps nesting at 64 levels (`...`).
 
 Named function *expressions* (`let f = fn g() {...}`) bind only `f`; the inner
@@ -186,14 +189,15 @@ source → lexer → single-pass Pratt compiler → bytecode → stack VM
 - **Memory** (`gc.c`, `obj.c`): mark-sweep collection rooted at the value
   stack, call frames, globals, open upvalues, and the compiler's in-flight
   function chain. Strings are interned, so `==` on equal strings is a
-  pointer compare. Collection triggers at a heap threshold (1 MiB, doubling
-  after each pass); `make stress` recompiles with `-DFABLE_GC_STRESS` to
+  pointer compare. Collection triggers when the live heap passes a
+threshold (1 MiB at first, then twice the live size after each pass; the
+byte counter tracks live bytes exactly, so long sessions don't ratchet); `make stress` recompiles with `-DFABLE_GC_STRESS` to
   collect on every allocation.
 
 ## Testing
 
 - `make test` runs everything:
-  - a C unit suite (`tests/unit/test-unit.c`) with **558 checks** covering
+  - a C unit suite (`tests/unit/test-unit.c`) with **571 checks** covering
     the lexer, values, hash table, bytecode chunks, and end-to-end programs
     (closures, recursion, shared upvalues, lists, error paths, IEEE edge
     cases, GC-safety patterns, and every resource limit above);

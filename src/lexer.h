@@ -31,6 +31,7 @@ typedef struct {
     const char *start;
     const char *cur;
     int line;
+    int last_token_line;   /* line of the last real token: anchors EOF errors */
     Token error;      /* first lex error, sticky */
     bool failed;
     bool unterminated_comment;

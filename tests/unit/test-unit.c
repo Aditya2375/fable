@@ -15,6 +15,8 @@ static long checks;
 } while (0)
 
 /* capture output of an interpret() run */
+static char last_err[4096];
+
 static char *run_capture(const char *src, InterpretResult *res) {
     char *buf = NULL;
     size_t cap = 0;
@@ -27,6 +29,7 @@ static char *run_capture(const char *src, InterpretResult *res) {
     InterpretResult r = interpret(src, "<test>");
     fclose(mem);
     fclose(memerr);
+    snprintf(last_err, sizeof last_err, "%s", ebuf ? ebuf : "");
     free(ebuf);
     if (res) *res = r;
     return buf;
@@ -598,7 +601,7 @@ static char *src_with_nils(const char *prefix, int nils, const char *suffix) {
 
 /* Build "<open>"*depth + "1" + "<close>"*depth + ";" */
 static char *src_nested(const char *open, const char *close, int depth) {
-    size_t cap = (size_t)depth * 2 + 8;
+    size_t cap = (size_t)depth * (strlen(open) + strlen(close)) + 8;
     char *s = malloc(cap), *w = s;
     for (int i = 0; i < depth; i++) w += sprintf(w, "%s", open);
     w += sprintf(w, "1");
@@ -674,12 +677,75 @@ static void critic_r3(void) {
     free(out);
 }
 
+
+/* ---- critic round 4 ---- */
+static void critic_r4(void) {
+    InterpretResult r;
+    char *out, *src;
+
+    /* L1: "at end" errors point at the last real token's line in every
+     * frontend - a trailing newline no longer shifts the number. */
+    out = run_capture("1 + 1\n", &r);
+    OK(r == INTERPRET_COMPILE_ERROR && strstr(last_err, "<test>:1: at end") != NULL);
+    free(out);
+    out = run_capture("1 +\n\n\n", &r);
+    OK(r == INTERPRET_COMPILE_ERROR && strstr(last_err, "<test>:1: at end") != NULL);
+    free(out);
+    out = run_capture("let x = 1;\nlet y = 2;\n1 + 1\n", &r);
+    OK(r == INTERPRET_COMPILE_ERROR && strstr(last_err, "<test>:3: at end") != NULL);
+    free(out);
+
+    /* L2: num() is exactly the source-literal grammar: no '+', digits on
+     * both sides of the point; inf/nan words stay for round-tripping. */
+    out = run_capture("num(\"+1\");", &r);
+    OK(r == INTERPRET_RUNTIME_ERROR);
+    free(out);
+    out = run_capture("num(\"1.\");", &r);
+    OK(r == INTERPRET_RUNTIME_ERROR);
+    free(out);
+    out = run_capture("num(\".5\");", &r);
+    OK(r == INTERPRET_RUNTIME_ERROR);
+    free(out);
+    out = run_capture("print(num(\"-1\") + 2);", &r);
+    OK(r == INTERPRET_OK && !strcmp(out, "1\n"));
+    free(out);
+    out = run_capture("print(num(\"1.5e3\") + num(\"-inf\"));", &r);
+    OK(r == INTERPRET_OK && !strcmp(out, "-inf\n"));
+    free(out);
+
+    /* L3: nesting is uniform - every construct (parens, list brackets,
+     * unary operators) costs exactly one of the 512 levels, mixed or not. */
+    src = src_nested("-(", ")", 256);   /* 512 constructs */
+    out = run_capture(src, &r);
+    OK(r == INTERPRET_OK);
+    free(out); free(src);
+    src = src_nested("-(", ")", 257);   /* 514 constructs */
+    out = run_capture(src, &r);
+    OK(r == INTERPRET_COMPILE_ERROR);
+    free(out); free(src);
+
+    /* Info: the GC threshold tracks the live heap. A long session that
+     * generates ~9 MB of garbage must end with a small live-byte counter
+     * and a sane threshold - not a ratchet of total-ever-allocated. */
+    out = run_capture(
+        "for (let i = 0; i < 1000; i = i + 1) {\n"
+        "  let junk = [];\n"
+        "  for (let j = 0; j < 100; j = j + 1) { push(junk, \"abcdefghijklmnopqrstuvwxyz\" + str(j)); }\n"
+        "}\n"
+        "print(\"done\");\n", &r);
+    OK(r == INTERPRET_OK && !strcmp(out, "done\n"));
+    OK(vm.bytes_allocated < 3 * 1024 * 1024);
+    OK(vm.next_gc <= 4 * GC_THRESHOLD);
+    free(out);
+}
+
 int main(void) {
     vm_init(stdout, stderr);
     lexer_basics();
     values_basics();
     table_basics();
     chunk_basics();
+    critic_r4();
     critic_r3();
     critic_r2();
     critic_r1();
