@@ -84,12 +84,15 @@ int main(int argc, char **argv) {
             }
             if (!strchr(line, '\n') && !feof(stdin)) {
                 int ch; while ((ch = getchar()) != '\n' && ch != EOF) {}
-                fprintf(stderr, "line too long\n");
+                fprintf(stderr, "<repl>: line too long (over %d chars)\n", (int)sizeof line - 2);
+                pending[0] = '\0';   /* a dropped line corrupts any pending input */
+                rc = 1;
                 continue;
             }
             if (strlen(pending) + strlen(line) >= sizeof pending - 1) {
-                fprintf(stderr, "input too long\n");
+                fprintf(stderr, "<repl>: input too long\n");
                 pending[0] = '\0';
+                rc = 1;
                 continue;
             }
             strcat(pending, line);

@@ -279,7 +279,7 @@ static Rule *rule(TokenType t) { return &rules[t]; }
 
 
 static void parse_precedence(Precedence prec) {
-    if (P.expr_depth >= EXPR_DEPTH_MAX) {
+    if (P.expr_depth > EXPR_DEPTH_MAX) {
         depth_error("expression nested too deeply (limit %d)", EXPR_DEPTH_MAX);
         return;
     }

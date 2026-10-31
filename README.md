@@ -4,7 +4,7 @@ fable is a small, complete programming language: a tree-walk-free, bytecode
 interpreter written in C11 with no dependencies beyond libc and libm. It has
 lexically scoped variables, first-class functions, closures with shared
 upvalues, lists, strings, and a mark-sweep garbage collector. The interpreter core is
-2775 lines of C.
+2791 lines of C.
 
 Try it in your browser: **https://aditya2375.github.io/fable/** - the same C
 compiled to WebAssembly, running entirely on your machine.
@@ -114,14 +114,17 @@ comments nest and must be closed). Statements end with `;`. In the REPL and
 the browser demo, a line that leaves a bracket, string or comment open
 continues on the next line with a `... ` prompt.
 
-`str(list)` renders a list exactly the way `print` would, cycles included.
+`str(v)` renders any value exactly the way `print` would (lists, cycles
+included; `str(f)` is `<fn name>`).
 
 `num()` is strict: it accepts decimal numbers (`-12.5e3`) and the exact
-words `inf`/`nan` (so `num(str(x))` round-trips), and rejects whitespace,
-hex, empty strings and trailing garbage.
+words `inf`/`nan` (so `num(str(x))` round-trips - except `nan`, which by
+IEEE rule never equals itself), and rejects whitespace, hex, empty strings
+and trailing garbage.
 
 In the terminal REPL, ending input with a bracket, string or comment still
-open is an error (`unexpected end of input`, nonzero exit). In the browser
+open is an error (`unexpected end of input`, nonzero exit), and so is a
+single input line over 4094 characters (`line too long`, nonzero exit). In the browser
 demo, clicking an example while a line is half-typed discards the partial
 line (and says so) instead of wedging the session.
 
@@ -160,8 +163,9 @@ name is display metadata, not a self-reference. Use a `fn` declaration or a
 `let` binding for recursion.
 
 Numbers are doubles, so integers above 2^53 lose precision, as in JavaScript.
-Printing uses the shortest form that round-trips: `num(str(x)) == x` always
-holds, `-0` keeps its sign, and `nan`/`inf`/`-inf` print as words.
+Printing uses the shortest form that round-trips: `num(str(x))` is
+bit-identical to `x` for every number except `nan` (IEEE: `nan != nan`),
+`-0` keeps its sign, and `nan`/`inf`/`-inf` print as words.
 
 ## How it works
 
@@ -189,7 +193,7 @@ source → lexer → single-pass Pratt compiler → bytecode → stack VM
 ## Testing
 
 - `make test` runs everything:
-  - a C unit suite (`tests/unit/test-unit.c`) with **536 checks** covering
+  - a C unit suite (`tests/unit/test-unit.c`) with **558 checks** covering
     the lexer, values, hash table, bytecode chunks, and end-to-end programs
     (closures, recursion, shared upvalues, lists, error paths, IEEE edge
     cases, GC-safety patterns, and every resource limit above);
@@ -201,9 +205,10 @@ source → lexer → single-pass Pratt compiler → bytecode → stack VM
   UndefinedBehaviorSanitizer, and float-cast-overflow checking.
 - `make stress` re-runs it with the GC collecting on every allocation.
 - `python3 tests/fuzz.py` generates random integer-arithmetic programs and
-  diffs fable's output against python3 (300 programs), plus 100 random byte
-  blobs that must never crash the interpreter (also run under the sanitizers
-  in CI).
+  diffs fable's output against python3 (200 programs and 100 byte blobs by
+  default; the blobs are random bytes that must never crash the
+  interpreter). CI runs 300 programs + 100 byte blobs, plus 50 programs +
+  300 byte blobs under the sanitizers.
 
 The CI workflow runs the unit, golden, sanitizer, GC-stress, and fuzz suites
 plus a WebAssembly build on every push.

@@ -58,7 +58,7 @@ let errNext = false;
    so each call appends one full line. */
 function print(t){
   if (errNext) { const s = document.createElement('span'); s.className = 'err'; s.textContent = t + '\n'; out.appendChild(s); errNext = false; }
-  else out.textContent += t + '\n';
+  else out.appendChild(document.createTextNode(t + '\n'));
   out.scrollTop = out.scrollHeight;
 }
 function printErr(t){ errNext = true; print(t); }

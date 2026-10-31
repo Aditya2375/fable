@@ -26,7 +26,17 @@ out=$("$BIN" -c 'print(1+1);' 2>&1) && rc=$? || rc=$?
 if [ "$rc" -ne 0 ] || [ "$out" != "2" ]; then
     echo "FAIL cli: -c print(1+1) (rc=$rc: $out)"; cli_fail=1
 fi
-[ "$cli_fail" -eq 0 ] && echo "cli: 2 checks passed" || fail=1
+# EOF with a comment hiding an open bracket: incomplete input, not a program
+out=$(printf '{\n# c' | "$BIN" 2>&1) && rc=$? || rc=$?
+if [ "$rc" -eq 0 ] || ! printf '%s' "$out" | grep -q "unexpected end of input"; then
+    echo "FAIL cli: REPL EOF inside comment with open brace (rc=$rc: $out)"; cli_fail=1
+fi
+# an over-long input line is an error with a nonzero exit, not a silent skip
+out=$(awk 'BEGIN{for(i=0;i<5000;i++)printf "1"}' | "$BIN" 2>&1) && rc=$? || rc=$?
+if [ "$rc" -eq 0 ] || ! printf '%s' "$out" | grep -q "line too long"; then
+    echo "FAIL cli: over-long line must error and exit nonzero (rc=$rc: $out)"; cli_fail=1
+fi
+[ "$cli_fail" -eq 0 ] && echo "cli: 4 checks passed" || fail=1
 
 if [ "$fail" -eq 0 ]; then echo "golden: $count cases passed"; fi
 exit $fail

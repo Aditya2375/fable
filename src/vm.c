@@ -119,6 +119,10 @@ static Value n_push(int argc, Value *argv, bool *err, char *eb, int ec) {
     }
     ObjList *l = AS_LIST(argv[0]);
     vm_push(argv[1]);          /* GC shield across varray growth */
+    if (vm.had_runtime_error) {   /* full stack: do not append unshielded */
+        *err = true; snprintf(eb, (size_t)ec, "%s", vm.errbuf);
+        return NIL_VAL;
+    }
     varray_push(&l->items, argv[1]);
     vm_pop();
     return argv[0];
@@ -139,19 +143,15 @@ static Value n_str(int argc, Value *argv, bool *err, char *eb, int ec) {
     if (IS_BOOL(argv[0])) return OBJ_VAL(string_copy(AS_BOOL(argv[0]) ? "true" : "false", AS_BOOL(argv[0]) ? 4 : 5));
     if (IS_NIL(argv[0])) return OBJ_VAL(string_copy("nil", 3));
     if (IS_OBJ(argv[0]) && AS_OBJ(argv[0])->type == OBJ_STRING) return argv[0];
-    /* functions and lists get their display form; a list renders exactly
-     * like print() would render it */
-    if (IS_OBJ(argv[0]) && AS_OBJ(argv[0])->type == OBJ_LIST) {
-        char *buf = NULL;
-        size_t cap = 0;
-        FILE *mem = open_memstream(&buf, &cap);
-        value_print(mem, argv[0]);   /* argv stays rooted on the VM stack */
-        fclose(mem);
-        ObjString *r = string_copy(buf, (int)cap);
-        free(buf);
-        return OBJ_VAL(r);
-    }
-    return OBJ_VAL(string_copy("<fn>", 4));
+    /* lists, functions, natives: render exactly like print() would */
+    char *buf = NULL;
+    size_t cap = 0;
+    FILE *mem = open_memstream(&buf, &cap);
+    value_print(mem, argv[0]);   /* argv stays rooted on the VM stack */
+    fclose(mem);
+    ObjString *r = string_copy(buf, (int)cap);
+    free(buf);
+    return OBJ_VAL(r);
 }
 static Value n_num(int argc, Value *argv, bool *err, char *eb, int ec) {
     (void)argc;
@@ -427,6 +427,7 @@ static InterpretResult run(void) {
                            IS_OBJ(b) && AS_OBJ(b)->type == OBJ_LIST) {
                     ObjList *l = list_new();
                     vm_push(OBJ_VAL(l));   /* GC shield while copying */
+                    if (vm.had_runtime_error) goto rt_fail;   /* full stack: stop before copying */
                     ObjList *la = AS_LIST(a), *lb = AS_LIST(b);
                     for (int i = 0; i < la->items.count; i++) varray_push(&l->items, la->items.items[i]);
                     for (int i = 0; i < lb->items.count; i++) varray_push(&l->items, lb->items.items[i]);
@@ -480,6 +481,9 @@ static InterpretResult run(void) {
                 ObjFunction *fn = AS_FUNCTION(READ_CONST());
                 ObjClosure *c = closure_new(fn);
                 vm_push(OBJ_VAL(c));
+                /* full stack: stop before capture_upvalue allocates with
+                 * the closure unrooted */
+                if (vm.had_runtime_error) goto rt_fail;
                 for (int i = 0; i < c->upvalue_count; i++) {
                     uint8_t is_local = READ_BYTE();
                     uint8_t idx = READ_BYTE();
@@ -510,6 +514,9 @@ static InterpretResult run(void) {
                 ObjList *l = list_new();
                 /* elements sit above the new list on the stack: shield first */
                 vm_push(OBJ_VAL(l));
+                /* full stack: stop before the copy loop allocates with the
+                 * list unrooted */
+                if (vm.had_runtime_error) goto rt_fail;
                 for (int i = (int)vm_stack_depth() - n - 1; i < (int)vm_stack_depth() - 1; i++)
                     varray_push(&l->items, vm.stack[i]);
                 vm_pop();                    /* the shield */
@@ -618,11 +625,13 @@ InterpretResult interpret(const char *src, const char *chunk_name) {
     ObjFunction *fn = compile(src, vm.repl, chunk_name);
     if (!fn) return INTERPRET_COMPILE_ERROR;
     if (vm.disasm) chunk_disassemble(&fn->chunk, chunk_name, vm.out);
+    vm.had_runtime_error = false;
     vm_push(OBJ_VAL(fn));
+    if (vm.had_runtime_error) return INTERPRET_RUNTIME_ERROR;
     ObjClosure *c = closure_new(fn);
     vm_pop();
     vm_push(OBJ_VAL(c));
-    vm.had_runtime_error = false;
+    if (vm.had_runtime_error) return INTERPRET_RUNTIME_ERROR;
     if (!call_value(OBJ_VAL(c), 0)) {
         fprintf(vm.err, "%s:0: %s\n", vm.src_name, vm.errbuf);
         vm_pop();

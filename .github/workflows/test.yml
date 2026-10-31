@@ -21,6 +21,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: make stress
+      - name: unit suite under GC stress + sanitizers
+        run: |
+          make clean
+          make EXTRA="-DFABLE_GC_STRESS -fsanitize=address,undefined,float-cast-overflow -fno-omit-frame-pointer" build/test-unit
+          ./build/test-unit
   fuzz:
     runs-on: ubuntu-latest
     steps:

@@ -585,12 +585,102 @@ static void end_to_end(void) {
     free(out);
 }
 
+
+/* Build "<prefix>nil, nil, ...<suffix>" with n nils without O(n^2) strcat. */
+static char *src_with_nils(const char *prefix, int nils, const char *suffix) {
+    size_t cap = strlen(prefix) + (size_t)nils * 6 + strlen(suffix) + 1;
+    char *s = malloc(cap), *w = s;
+    w += sprintf(w, "%s", prefix);
+    for (int i = 0; i < nils; i++) w += sprintf(w, i ? ", nil" : "nil");
+    sprintf(w, "%s", suffix);
+    return s;
+}
+
+/* Build "<open>"*depth + "1" + "<close>"*depth + ";" */
+static char *src_nested(const char *open, const char *close, int depth) {
+    size_t cap = (size_t)depth * 2 + 8;
+    char *s = malloc(cap), *w = s;
+    for (int i = 0; i < depth; i++) w += sprintf(w, "%s", open);
+    w += sprintf(w, "1");
+    for (int i = 0; i < depth; i++) w += sprintf(w, "%s", close);
+    sprintf(w, ";");
+    return s;
+}
+
+static void critic_r3(void) {
+    InterpretResult r;
+    char *out, *src;
+
+    /* Round-3 HIGH: shield pushes on an exactly-full value stack (65536)
+     * must stop execution before any further allocation touches the
+     * unrooted object. Each case must fail with one clean stack-overflow
+     * error; under GC stress + ASan these were heap-use-after-frees. */
+    struct { const char *name; const char *prefix; int nils; const char *suffix; } full[] = {
+        /* OP_BUILD_LIST: script closure (1 slot) + 65535 elements */
+        { "list-build", "let x = [", 65535, "];" },
+        /* OP_ADD concat: 1 + 65533 elements + 2 list operands */
+        { "list-concat", "[", 65533, ", [1] + [2]];" },
+        /* push(): 1 + 65532 elements + callee + 2 args */
+        { "native-push", "[", 65532, ", push([1], 2)];" },
+    };
+    for (int i = 0; i < 3; i++) {
+        src = src_with_nils(full[i].prefix, full[i].nils, full[i].suffix);
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_RUNTIME_ERROR);           /* full stack: clean error */
+        OK(strstr(vm.errbuf, "stack overflow") != NULL);
+        free(out); free(src);
+    }
+    /* OP_CLOSURE: script + outer frame + local + 65533 elements = full */
+    src = src_with_nils("fn outer() { let z = 1; return [", 65533,
+                        ", fn() { return z; }]; }\nouter();");
+    out = run_capture(src, &r);
+    OK(r == INTERPRET_RUNTIME_ERROR);
+    OK(strstr(vm.errbuf, "stack overflow") != NULL);
+    free(out); free(src);
+
+    /* one below the cap the same shapes must run fine */
+    src = src_with_nils("let x = [", 65534, "]; print(len(x));");
+    out = run_capture(src, &r);
+    OK(r == INTERPRET_OK && !strcmp(out, "65534\n"));
+    free(out); free(src);
+
+    /* Round-3 F5: source ending inside a comment with open brackets is
+     * incomplete (the REPL must keep reading, then error at EOF) */
+    OK(!fable_source_complete("{\n# c"));
+    OK(!fable_source_complete("{\n// c"));
+    OK(fable_source_complete("{\n# c\n}"));
+    OK(!fable_source_complete("/* never closed"));
+    OK(fable_source_complete("/* closed */ { }"));
+
+    /* Round-3 F6a: expression nesting is uniformly 512 for every form */
+    const char *forms[3][2] = { { "[", "]" }, { "(", ")" }, { "-", "" } };
+    for (int i = 0; i < 3; i++) {
+        src = src_nested(forms[i][0], forms[i][1], 512);
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_OK);
+        free(out); free(src);
+        src = src_nested(forms[i][0], forms[i][1], 513);
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_COMPILE_ERROR);
+        free(out); free(src);
+    }
+
+    /* Round-3 F6c: str() matches print() for functions and natives */
+    out = run_capture("fn foo() {} print(str(foo));", &r);
+    OK(r == INTERPRET_OK && !strcmp(out, "<fn foo>\n"));
+    free(out);
+    out = run_capture("print(str(len));", &r);
+    OK(r == INTERPRET_OK && !strcmp(out, "<native len>\n"));
+    free(out);
+}
+
 int main(void) {
     vm_init(stdout, stderr);
     lexer_basics();
     values_basics();
     table_basics();
     chunk_basics();
+    critic_r3();
     critic_r2();
     critic_r1();
     repl_echo();

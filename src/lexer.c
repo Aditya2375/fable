@@ -217,10 +217,10 @@ bool fable_source_complete(const char *src) {
                 break;
             case '#':
                 while (*p && *p != '\n') p++;
-                if (!*p) return true;
+                if (!*p) goto counts;   /* comment runs to end of source */
                 break;
             case '/':
-                if (p[1] == '/') { while (*p && *p != '\n') p++; if (!*p) return true; }
+                if (p[1] == '/') { while (*p && *p != '\n') p++; if (!*p) goto counts; }
                 else if (p[1] == '*') {
                     int depth = 1;
                     p += 2;
@@ -241,5 +241,6 @@ bool fable_source_complete(const char *src) {
             case '}': braces--; break;
         }
     }
+counts:
     return parens <= 0 && brackets <= 0 && braces <= 0;
 }

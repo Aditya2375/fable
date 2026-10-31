@@ -37,10 +37,13 @@ ObjString *string_copy(const char *chars, int len) {
     uint32_t hash = hash_bytes(chars, len);
     ObjString *hit = table_find_string(&vm.strings, chars, len, hash);
     if (hit) return hit;
+    /* GC paused across alloc + intern: a shield push could fail on a full
+     * stack, leaving an unrooted string in the intern table after a
+     * collection triggered by the table's own growth. */
+    vm.gc_paused++;
     ObjString *s = alloc_string((char *)chars, len, hash);
-    vm_push(OBJ_VAL(s));
     table_set(&vm.strings, s, NIL_VAL);
-    vm_pop();
+    vm.gc_paused--;
     return s;
 }
 
@@ -48,11 +51,11 @@ ObjString *string_take(char *chars, int len) {
     uint32_t hash = hash_bytes(chars, len);
     ObjString *hit = table_find_string(&vm.strings, chars, len, hash);
     if (hit) { FREE_ARRAY(chars); return hit; }
+    vm.gc_paused++;
     ObjString *s = alloc_string(chars, len, hash);
     FREE_ARRAY(chars);
-    vm_push(OBJ_VAL(s));
     table_set(&vm.strings, s, NIL_VAL);
-    vm_pop();
+    vm.gc_paused--;
     return s;
 }
 

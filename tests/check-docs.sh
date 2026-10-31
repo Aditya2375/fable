@@ -13,6 +13,11 @@ cases=$(ls tests/cases/*.fable | wc -l)
 if ! grep -q "$cases golden" README.md; then
     echo "check-docs: README golden-case count ($cases) missing or stale"; fail=1
 fi
+prog=$(sed -n 's/.*"--programs", type=int, default=\([0-9][0-9]*\).*/\1/p' tests/fuzz.py)
+blob=$(sed -n 's/.*"--blobs", type=int, default=\([0-9][0-9]*\).*/\1/p' tests/fuzz.py)
+if ! grep -q "$prog programs and $blob byte blobs" README.md; then
+    echo "check-docs: README fuzz counts stale (fuzz.py defaults: $prog programs, $blob byte blobs)"; fail=1
+fi
 lines=$(cat src/*.c src/*.h | wc -l)
 if ! grep -q "$lines lines of C" README.md; then
     echo "check-docs: README line count ($lines) missing or stale"; fail=1
