@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fable - a small programming language</title>
+<style>
+  :root { color-scheme: dark; }
+  body { background:#0d1117; color:#c9d1d9; font:14px/1.5 -apple-system,"Segoe UI",sans-serif; margin:0; padding:2rem; }
+  main { max-width:860px; margin:0 auto; }
+  h1 { font-size:1.3rem; font-weight:600; }
+  h1 .name { color:#d2a8ff; font-family:ui-monospace,monospace; }
+  a { color:#58a6ff; }
+  .term { background:#010409; border:1px solid #30363d; border-radius:8px; margin-top:1rem; }
+  .termbar { padding:.4rem .8rem; color:#8b949e; font:12px ui-monospace,monospace; border-bottom:1px solid #30363d; }
+  #out { height:340px; overflow-y:auto; overflow-wrap:anywhere; padding:.8rem; font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre-wrap; color:#7ee787; }
+  #out .cmd { color:#58a6ff; }
+  #out .err { color:#f85149; }
+  #in { width:100%; box-sizing:border-box; background:transparent; border:0; border-top:1px solid #30363d; color:#c9d1d9; padding:.6rem .8rem; font:13px ui-monospace,monospace; outline:none; }
+  .btns { display:flex; flex-wrap:wrap; gap:.5rem; margin-top:1rem; }
+  button { background:#21262d; color:#d2a8ff; border:1px solid #30363d; border-radius:6px; padding:.45rem .8rem; font:12px ui-monospace,monospace; cursor:pointer; }
+  button:hover { border-color:#d2a8ff; }
+  .note { color:#8b949e; font-size:.85rem; margin-top:.6rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1><span class="name">fable</span> - a small programming language</h1>
+  <p>The real interpreter - lexer, single-pass compiler, bytecode VM,
+  mark-sweep garbage collector - compiled to WebAssembly and running in this
+  tab. Definitions persist between lines; the example buttons run whole
+  programs. <a href="https://github.com/Aditya2375/fable">Source on GitHub</a>.</p>
+  <div class="btns">
+    <button data-p="fib">fibonacci</button>
+    <button data-p="counter">closures</button>
+    <button data-p="fizzbuzz">fizzbuzz</button>
+    <button data-p="lists">lists</button>
+    <button data-p="errors">error recovery</button>
+    <button data-p="reset">reset session</button>
+  </div>
+  <div class="term">
+    <div class="termbar">fable - interactive session</div>
+    <div id="out">loading wasm...</div>
+    <input id="in" placeholder='fable> try: print("hello" + " world");' disabled>
+  </div>
+  <p class="note">let / fn / if / while / for / return, closures, lists,
+  strings, and / or / not. Statements end with ';'. Expressions echo their
+  value, like the terminal REPL.</p>
+</main>
+<script src="fable.js?v=1"></script>
+<script>
+const out = document.getElementById('out');
+const inp = document.getElementById('in');
+let M = null;
+let errNext = false;
+/* emscripten calls print once per output line WITHOUT the trailing newline,
+   so each call appends one full line. */
+function print(t){
+  if (errNext) { const s = document.createElement('span'); s.className = 'err'; s.textContent = t + '\n'; out.appendChild(s); errNext = false; }
+  else out.textContent += t + '\n';
+  out.scrollTop = out.scrollHeight;
+}
+function printErr(t){ errNext = true; print(t); }
+function printCmd(t){
+  const s = document.createElement('span'); s.className = 'cmd'; s.textContent = t + '\n';
+  out.appendChild(s); out.scrollTop = out.scrollHeight;
+}
+function exec(src){
+  M.ccall('fable_exec', null, ['string'], [src]);
+}
+function runLine(line){
+  printCmd('fable> ' + line);
+  exec(line);
+}
+const programs = {
+  fib: 'fn fib(n) {\n  if (n < 2) { return n; }\n  return fib(n - 1) + fib(n - 2);\n}\nfor (let i = 0; i < 10; i = i + 1) {\n  print(fib(i));\n}',
+  counter: 'fn make_counter() {\n  let n = 0;\n  fn step() { n = n + 1; return n; }\n  return step;\n}\nlet c = make_counter();\nprint(c());\nprint(c());\nlet d = make_counter();\nprint(d());\nprint(c());',
+  fizzbuzz: 'for (let i = 1; i <= 15; i = i + 1) {\n  if (i % 15 == 0) { print("fizzbuzz"); }\n  else if (i % 3 == 0) { print("fizz"); }\n  else if (i % 5 == 0) { print("buzz"); }\n  else { print(i); }\n}',
+  lists: 'let xs = [1, 2, 3];\npush(xs, 4);\nprint(xs);\nprint(xs[-1]);\nprint(pop(xs));\nlet squares = [];\nfor (let i = 0; i < 6; i = i + 1) {\n  push(squares, i * i);\n}\nprint(squares);',
+  errors: ['print("before");', '1 + ;', 'print("the session survives compile errors");'],
+};
+function runProgram(name){
+  if (name === 'reset') {
+    M.ccall('fable_boot', null, [], []);
+    printCmd('fable> <session reset>');
+    return;
+  }
+  const src = programs[name];
+  const chunks = Array.isArray(src) ? src : [src];
+  chunks.forEach(c => {
+    printCmd('fable> ' + c.split('\n').join('\n...   '));
+    exec(c);
+  });
+}
+FableModule({ print, printErr }).then(m => {
+  M = m;
+  M.ccall('fable_boot', null, [], []);
+  out.textContent = '';
+  print('fable ready. Type an expression or click an example.');
+  inp.disabled = false;
+  inp.focus();
+});
+inp.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && inp.value.trim()) {
+    runLine(inp.value.trim());
+    inp.value = '';
+  }
+});
+document.querySelectorAll('button').forEach(b =>
+  b.addEventListener('click', () => runProgram(b.dataset.p)));
+</script>
+</body>
+</html>

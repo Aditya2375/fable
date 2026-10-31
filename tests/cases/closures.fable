@@ -1,0 +1,14 @@
+fn make_counter() {
+    let n = 0;
+    fn step() {
+        n = n + 1;
+        return n;
+    }
+    return step;
+}
+let c = make_counter();
+print(c());
+print(c());
+let d = make_counter();
+print(d());
+print(c());

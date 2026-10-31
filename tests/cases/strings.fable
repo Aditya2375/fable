@@ -1,0 +1,10 @@
+let s = "hello" + " " + "world";
+print(s);
+print(len(s));
+print(s[0]);
+print(s[-1]);
+print("abc" == "abc");
+print("abc" == "abd");
+print(str(42) + "!");
+print(num("3.5") * 2);
+print(type(s));

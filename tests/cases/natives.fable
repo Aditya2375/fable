@@ -1,0 +1,9 @@
+print(abs(-3));
+print(abs(3));
+print(floor(3.7));
+print(sqrt(16));
+print(len("fable"));
+print(type(nil));
+print(type(true));
+print(type(3));
+print(type([1]));

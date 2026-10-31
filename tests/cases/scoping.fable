@@ -1,0 +1,12 @@
+let a = "global";
+{
+    let a = "block";
+    print(a);
+    {
+        let a = "inner";
+        print(a);
+    }
+    print(a);
+}
+print(a);
+for (let i = 0; i < 2; i = i + 1) { let z = i * 10; print(z); }

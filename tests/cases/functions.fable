@@ -1,0 +1,10 @@
+fn add(a, b) { return a + b; }
+print(add(2, 3));
+fn outer() {
+    fn inner(x) { return x * 2; }
+    return inner(21);
+}
+print(outer());
+let apply = fn(f, v) { return f(v); };
+print(apply(fn(n) { return n + 100; }, 5));
+print(type(add));

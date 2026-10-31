@@ -1,0 +1,13 @@
+fn make_pair() {
+    let shared = 0;
+    fn inc() { shared = shared + 1; return shared; }
+    fn get() { return shared; }
+    return [inc, get];
+}
+let p = make_pair();
+let inc = p[0];
+let get = p[1];
+inc();
+inc();
+inc();
+print(get());

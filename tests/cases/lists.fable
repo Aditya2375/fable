@@ -1,0 +1,13 @@
+let xs = [1, 2, 3];
+push(xs, 4);
+print(xs);
+print(len(xs));
+print(xs[0]);
+print(xs[-1]);
+print(pop(xs));
+print(xs);
+xs[0] = 99;
+print(xs[0]);
+let ys = [];
+for (let i = 0; i < 5; i = i + 1) { push(ys, i * i); }
+print(ys);

@@ -1,0 +1,9 @@
+let x = 7;
+if (x > 5) { print("big"); } else { print("small"); }
+let i = 0;
+while (i < 3) { print(i); i = i + 1; }
+print(not false);
+print(true and "yes");
+print(false or "fallback");
+print(nil == nil);
+print(0 or "zero is truthy");
