@@ -136,7 +136,8 @@ line (and says so) instead of wedging the session, and accumulated input is
 capped at the same 64 KB (`input too long`). Output is byte-faithful: valid
 UTF-8 prints unchanged, a byte that is not valid UTF-8 shows as U+FFFD, and
 a NUL byte shows as ␀ in place, without splitting its line. Output and
-errors stay in the exact order the program wrote them, and keeps about the most recent 5000 lines (older lines drop behind a trim marker) so
+errors stay in the exact order the program wrote them, and the demo keeps
+about the 5000 most recent lines (older lines drop behind a trim marker) so
 a large print loop cannot bloat the tab. If the interpreter itself runs out
 of memory, the session ends with a clear message and the input locks until
 "reset session" boots a fresh one.
@@ -252,6 +253,9 @@ byte counter tracks live bytes exactly, so long sessions don't ratchet); `make s
     cases, GC-safety patterns, and every resource limit above);
   - a golden suite (`tests/cases/`, 11 golden programs) diffing real
     interpreter output against committed expectations;
+  - a native fallback test (`tests/test-streams-fallback.c`) injecting
+    allocation failures into the wasm wrapper's output capture, checking
+    cleanup, warning-once and recovery;
   - `tests/check-docs.sh`, which fails if this README's test counts or line
     count drift.
 - `make sanitize` re-runs the whole suite under AddressSanitizer,
@@ -272,7 +276,7 @@ plus a WebAssembly build on every push.
 src/        interpreter core (lexer, compiler, vm, gc, objects, table, chunk, value)
 wasm/       Emscripten wrapper exposing fable_boot / fable_exec_len
 docs/       browser demo (GitHub Pages), built from wasm/
-tests/      C unit suite, golden cases, docs check, wasm smoke test
+tests/      C unit suite, golden cases, docs check, wasm smoke + fallback tests
 ```
 
 The design follows the proven tree-walk-free architecture for small
