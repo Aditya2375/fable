@@ -149,8 +149,8 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
     r = run("print(2);");
     ok(r.rc === 0, "wasm: a good line after the drops");
     r = run("\0");
-    ok(r.rc === 1 && r.err.includes("<web>:5: NUL byte in source"),
-       "wasm: NUL after good lines names the absolute session line");
+    ok(r.rc === 1 && r.err.startsWith("<web>:5: NUL byte in source"),
+       "wasm: NUL after good lines names the absolute session line, bare like the CLI");
     boot();
     r = run("fn nulholder() {");
     ok(r.rc === 2, "wasm: open fn leaves input pending");
@@ -187,6 +187,25 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
     r = run("print(1 + 1);");
     ok(r.rc === 0 && r.out.includes("2"), "wasm: session survives an over-64KB rejection");
 
+    /* round-18 F1: a trailing newline terminates the line instead of
+     * consuming an extra session line (getline semantics) */
+    boot();
+    r = run("print(1);\n");
+    ok(r.rc === 0 && r.out.includes("1"), "wasm: trailing newline runs the line");
+    r = run("let q = ;");
+    ok(r.rc === 1 && r.err.includes("<web>:2:"),
+       "wasm: trailing newline did not consume a session line");
+
+    /* round-18 F2: a multi-line call is processed per line with the CLI's
+     * per-line cap - only the over-cap line is dropped, the rest still run */
+    boot();
+    run("fn f() {");
+    r = run("/*" + "x".repeat(65520) + "*/");
+    ok(r.rc === 2, "wasm: a line just under the cap is accepted (still pending)");
+    r = run("}\nprint(9);");
+    ok(r.rc === 1 && r.err.includes("input too long") && r.out.includes("9"),
+       "wasm: multi-line call drops only the over-cap line and runs the rest");
+
     /* round-17 F2: session differential - the same line sequence must name
      * the same absolute lines in the wasm session and the real CLI */
     const bin = require("path").join(__dirname, "..", "build", "fable");
@@ -204,6 +223,19 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
            "diff: wasm and the CLI name the same absolute lines for NUL/too-long sequences");
         ok(wasmErr.includes("input too long") && cli.stderr.includes("input too long"),
            "diff: both reject the over-64KB line");
+
+        /* round-18 F2 differential: the straddling sequence behaves the same
+         * on both sides, including the line after the dropped one */
+        const seq2 = ["fn f() {", "/*" + "x".repeat(65520) + "*/", "}", "print(9);"];
+        boot();
+        let werr2 = "", wout2 = "";
+        for (const line of seq2) { const rr = run(line); werr2 += rr.err; wout2 += rr.out; }
+        const cli2 = require("child_process").spawnSync(bin, [],
+            { input: seq2.join("\n") + "\n", encoding: "utf8" });
+        ok(werr2.includes("input too long") && cli2.stderr.includes("input too long"),
+           "diff: both drop the straddling line");
+        ok(wout2.includes("9") && cli2.stdout.includes("9"),
+           "diff: both run the line after the dropped over-cap line");
     } else {
         console.log("FAIL: build/fable missing - run make first for the CLI differential");
         fails = 1;
@@ -253,6 +285,9 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
      * writes the reason into the output; the controls are only ever enabled
      * in the success path, so a failure leaves them disabled */
     ok(html.includes(".catch(bootFailed)"), "demo: boot rejection is wired to bootFailed");
+
+    /* round-18 N2: 16px input font so iOS Safari does not auto-zoom on focus */
+    ok(/#in \{[^}]*font:16px/.test(html), "demo: session input is 16px (no iOS auto-zoom)");
     const bootSrc = grab(/function bootFailed\(e\)\{[\s\S]*?\n\}/, "bootFailed()");
     if (bootSrc) {
         const errs = [];

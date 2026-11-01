@@ -16,7 +16,7 @@
   #out { height:340px; overflow-y:auto; overflow-wrap:anywhere; padding:.8rem; font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre-wrap; color:#7ee787; }
   #out .cmd { color:#58a6ff; }
   #out .err { color:#f85149; }
-  #in { width:100%; box-sizing:border-box; background:transparent; border:0; border-top:1px solid #30363d; color:#c9d1d9; padding:.6rem .8rem; font:13px ui-monospace,monospace; outline:none; }
+  #in { width:100%; box-sizing:border-box; background:transparent; border:0; border-top:1px solid #30363d; color:#c9d1d9; padding:.6rem .8rem; font:16px ui-monospace,monospace; outline:none; }   /* 16px: iOS Safari auto-zooms focused inputs under that */
   .btns { display:flex; flex-wrap:wrap; gap:.5rem; margin-top:1rem; }
   button { background:#21262d; color:#d2a8ff; border:1px solid #30363d; border-radius:6px; padding:.45rem .8rem; font:12px ui-monospace,monospace; cursor:pointer; }
   button:hover { border-color:#d2a8ff; }
@@ -48,7 +48,7 @@
   their value, like the terminal REPL; a line that leaves a bracket open
   continues on the next line ("...").</p>
 </main>
-<script src="fable.js?v=7a69d6258713"></script>
+<script src="fable.js?v=e469c042d2f7"></script>
 <script>
 const out = document.getElementById('out');
 const inp = document.getElementById('in');
@@ -113,7 +113,7 @@ function runProgram(name){
 /* the wasm fetch carries the same content-hash buster as the js tag, so a
    returning browser can never pair fresh glue with a stale cached wasm
    (round-14 F1); wasm/build.sh stamps both on every rebuild */
-FableModule({ print, printErr, locateFile: (path) => path + '?v=7a69d6258713' }).then(m => {
+FableModule({ print, printErr, locateFile: (path) => path + '?v=e469c042d2f7' }).then(m => {
   M = m;
   M.ccall('fable_boot', null, [], []);
   out.textContent = '';
