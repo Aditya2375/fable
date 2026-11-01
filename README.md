@@ -4,7 +4,7 @@ fable is a small, complete programming language: a tree-walk-free, bytecode
 interpreter written in C11 plus the POSIX.1-2008 getline and open_memstream functions (the Makefile builds with -std=gnu11), with no dependencies beyond libc and libm. It has
 lexically scoped variables, first-class functions, closures with shared
 upvalues, lists, strings, and a mark-sweep garbage collector. The interpreter core is
-3015 lines of C.
+3019 lines of C.
 
 Try it in your browser: **https://aditya2375.github.io/fable/** - the same C
 compiled to WebAssembly, running entirely on your machine.
@@ -144,14 +144,15 @@ In the REPL a compile or runtime error prints and the session continues, so the
 exit status stays 0; only input that ends with a bracket, string or comment
 still open, a NUL byte in the input, or accumulated multi-line input
 over 64 KB exits nonzero. REPL errors name the absolute input line, even when
-the failing text sits inside a multi-line statement (the browser demo numbers
-lines within the current statement).
+the failing text sits inside a multi-line statement; the browser demo numbers
+lines the same way.
 Statements before the failing one in the same input still commit: globals
 they defined stay defined, their prints already happened; the failing
 statement commits nothing (a `let` that fails leaves the name undefined) -
 there is no statement-level atomicity. The browser demo's wasm boundary
-rejects NUL bytes the same way the CLI does (the page marshals an explicit
-length, so input is never silently truncated). `fable script.fable -c "..."` is a usage error
+rejects NUL bytes the same way the CLI does: a loud error naming the absolute
+input line, with any half-typed multi-line input dropped (the page marshals
+an explicit length, so input is never silently truncated). `fable script.fable -c "..."` is a usage error
 (exit 2): give a script or `-c`, not both.
 
 ```

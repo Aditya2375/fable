@@ -142,12 +142,16 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
        "wasm: nothing from a NUL-tainted line gets defined");
     r = run("fn nulholder() {");
     ok(r.rc === 2, "wasm: open fn leaves input pending");
+    r = run("  return 1;");
+    ok(r.rc === 2, "wasm: still pending after a body line");
     r = run("\0");
-    ok(r.rc !== 0 && r.err.includes("NUL byte"), "wasm: NUL mid-pending rejected");
+    ok(r.rc !== 0 && r.err.includes("<web>:3") && r.err.includes("NUL byte"),
+       "wasm: NUL mid-pending names the absolute line");
     r = run("}");
-    ok(r.rc === 0, "wasm: pending survives a dropped NUL line");
+    ok(r.rc !== 0, "wasm: the NUL line drops the pending input, like the CLI");
     r = run("print(nulholder);");
-    ok(r.out.includes("<fn nulholder>"), "wasm: the pended definition still completes");
+    ok(r.rc !== 0 && r.err.includes("undefined variable"),
+       "wasm: nothing from the dropped pending input survives");
 
     /* round-10 F2: the demo page must pass the input line to fable_exec
      * untrimmed (a trailing space inside a string continued across lines is
@@ -180,6 +184,23 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
         .update(require("fs").readFileSync(require("path").join(__dirname, "..", "docs", "fable.wasm")))
         .digest("hex").slice(0, 12);
     ok(vjs && vjs === vw && vjs === wasmHash, "demo: cache-busters match the wasm hash");
+
+    /* round-15 F2: a failed boot must surface an error instead of sitting
+     * on "loading wasm..." forever */
+    ok(html.includes(".catch("), "demo: a failed boot surfaces an error");
+
+    /* round-15 F1/F3: the page-side NUL belt counts pending lines like the
+     * C side and drops them like the CLI. Extract the real exec() and drive
+     * its NUL path with stubs. */
+    const execSrc = html.match(/function exec\(src\)\{[\s\S]*?\n\}/)[0];
+    let perr = null, discarded = 0;
+    const printErr = t => { perr = t; };
+    let pendingLines = 2;   // as if two lines of a statement are pending
+    const M = { ccall: name => { if (name === 'fable_discard_pending') discarded++; return 0; } };
+    eval("var execPage = " + execSrc);   // expression: no clash with the round-10 exec stub
+    execPage("let x = \0;");
+    ok(perr && perr.includes("<web>:3") && discarded === 1 && pendingLines === 0,
+       "demo: page-side NUL error counts and drops pending lines");
 
     process.exit(fails);
 });

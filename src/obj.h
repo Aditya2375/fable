@@ -74,7 +74,7 @@ struct ObjClosure {
 uint32_t hash_bytes(const char *data, int len);
 
 ObjString *string_copy(const char *chars, int len);
-ObjString *string_take(char *chars, int len);   /* adopts the buffer */
+ObjString *string_take(char *chars, int len);   /* copies the bytes and frees the caller's buffer */
 ObjList   *list_new(void);
 ObjFunction *function_new(void);
 ObjNative   *native_new(NativeFn fn, int arity, const char *name);

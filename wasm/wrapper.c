@@ -58,15 +58,20 @@ int fable_exec_len(const char *src, int len) {
             for (int j = 0; j < i; j++) if (src[j] == '\n') line++;
             fprintf(stderr, "fable: <web>:%d: NUL byte in input (source must be text)\n", line);
             fflush(stderr);
-            return 1;   /* nothing runs; pending input stays pending, like
-                           the terminal REPL dropping a NUL-tainted line */
+            pending_clear();   /* a dropped line corrupts any pending input, like the CLI */
+            return 1;   /* nothing runs */
         }
     }
     size_t n = (size_t)len;
     if (pending_len + n + 2 > pending_cap) {
         size_t new_cap = (pending_len + n + 2) * 2;
         char *np = realloc(pending, new_cap);   /* temp: a failed realloc must not leak the old buffer */
-        if (!np) { pending_clear(); return 1; }
+        if (!np) {
+            fprintf(stderr, "fable: <web>: out of memory receiving input\n");
+            fflush(stderr);
+            pending_clear();   /* the half-received statement cannot complete */
+            return 1;
+        }
         pending = np;
         pending_cap = new_cap;
     }

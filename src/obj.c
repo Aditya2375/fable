@@ -29,7 +29,7 @@ static ObjString *alloc_string(char *chars, int len, uint32_t hash) {
     s->hash = hash;
     memcpy(s->chars, chars, (size_t)len);
     s->chars[len] = '\0';
-    /* own the buffer copy; caller keeps theirs unless string_take */
+    /* the object owns this copy; the caller frees their own buffer */
     return s;
 }
 
@@ -47,6 +47,10 @@ ObjString *string_copy(const char *chars, int len) {
     return s;
 }
 
+/* The name is historical: the bytes are copied into the object and the
+ * caller's scratch buffer is freed. True adoption is impossible - ObjString
+ * stores its text in a flexible array member inside the object's own GC
+ * allocation, so there is no pointer field to take the caller's buffer. */
 ObjString *string_take(char *chars, int len) {
     uint32_t hash = hash_bytes(chars, len);
     ObjString *hit = table_find_string(&vm.strings, chars, len, hash);
