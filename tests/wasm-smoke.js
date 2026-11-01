@@ -168,5 +168,18 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
     eval(key);
     ok(sent === null, "demo: whitespace-only line stays a no-op");
 
+    /* round-14: buttons start disabled until boot enables them, and the
+     * js/wasm cache-busters match each other and the wasm content hash */
+    const buttons = html.match(/<button data-p="[^"]+" disabled>/g) || [];
+    ok(buttons.length === 6, "demo: all six buttons start disabled");
+    ok(html.includes("b.disabled = false"), "demo: boot enables the buttons");
+    const vjs = (html.match(/fable\.js\?v=([a-z0-9]{12})/) || [])[1];
+    const vw = (html.match(/locateFile:[^;]*\?v=([a-z0-9]{12})/) || [])[1];
+    const crypto = require("crypto");
+    const wasmHash = crypto.createHash("sha256")
+        .update(require("fs").readFileSync(require("path").join(__dirname, "..", "docs", "fable.wasm")))
+        .digest("hex").slice(0, 12);
+    ok(vjs && vjs === vw && vjs === wasmHash, "demo: cache-busters match the wasm hash");
+
     process.exit(fails);
 });

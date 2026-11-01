@@ -31,12 +31,12 @@
   tab. Definitions persist between lines; the example buttons run whole
   programs. <a href="https://github.com/Aditya2375/fable">Source on GitHub</a>.</p>
   <div class="btns">
-    <button data-p="fib">fibonacci</button>
-    <button data-p="counter">closures</button>
-    <button data-p="fizzbuzz">fizzbuzz</button>
-    <button data-p="lists">lists</button>
-    <button data-p="errors">error recovery</button>
-    <button data-p="reset">reset session</button>
+    <button data-p="fib" disabled>fibonacci</button>
+    <button data-p="counter" disabled>closures</button>
+    <button data-p="fizzbuzz" disabled>fizzbuzz</button>
+    <button data-p="lists" disabled>lists</button>
+    <button data-p="errors" disabled>error recovery</button>
+    <button data-p="reset" disabled>reset session</button>
   </div>
   <div class="term">
     <div class="termbar">fable - interactive session</div>
@@ -48,7 +48,7 @@
   their value, like the terminal REPL; a line that leaves a bracket open
   continues on the next line ("...").</p>
 </main>
-<script src="fable.js?v=5"></script>
+<script src="fable.js?v=b3fb4b9d625c"></script>
 <script>
 const out = document.getElementById('out');
 const inp = document.getElementById('in');
@@ -69,14 +69,17 @@ function printCmd(t){
 function exec(src){
   /* belt: the wasm boundary rejects NUL with the same error; a JS string
      can carry one, and a C string cannot */
-  if (src.indexOf('\0') >= 0) {
-    printErr('fable: <web>: NUL byte in input (source must be text)');
+  const nul = src.indexOf('\0');
+  if (nul >= 0) {
+    const line = src.slice(0, nul).split('\n').length;
+    printErr('fable: <web>:' + line + ': NUL byte in input (source must be text)');
     return 1;
   }
   /* marshal with an explicit length - ccall's 'string' conversion would
      silently truncate at a NUL */
   const bytes = new TextEncoder().encode(src);
   const ptr = M._malloc(Math.max(bytes.length, 1));
+  if (!ptr) { printErr('fable: out of memory sending input to the interpreter'); return 1; }
   M.writeArrayToMemory(bytes, ptr);
   const rc = M.ccall('fable_exec_len', 'number', ['number', 'number'], [ptr, bytes.length]);
   M._free(ptr);
@@ -113,12 +116,16 @@ function runProgram(name){
   });
   setEcho(true);
 }
-FableModule({ print, printErr }).then(m => {
+/* the wasm fetch carries the same content-hash buster as the js tag, so a
+   returning browser can never pair fresh glue with a stale cached wasm
+   (round-14 F1); wasm/build.sh stamps both on every rebuild */
+FableModule({ print, printErr, locateFile: (path) => path + '?v=b3fb4b9d625c' }).then(m => {
   M = m;
   M.ccall('fable_boot', null, [], []);
   out.textContent = '';
   print('fable ready. Type an expression or click an example.');
   inp.disabled = false;
+  document.querySelectorAll('button').forEach(b => { b.disabled = false; });
   inp.focus();
 });
 inp.addEventListener('keydown', e => {

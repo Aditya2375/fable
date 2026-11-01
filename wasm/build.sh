@@ -10,3 +10,8 @@ emcc -O2 -Isrc wasm/wrapper.c \
     -sEXPORTED_RUNTIME_METHODS=ccall,writeArrayToMemory \
     -sMODULARIZE=1 -sEXPORT_NAME=FableModule \
     -sSTACK_SIZE=4194304 -sALLOW_MEMORY_GROWTH=1
+
+# cache-bust both fetches with the wasm content hash, in lockstep
+ver=$(sha256sum docs/fable.wasm | cut -c1-12)
+sed -i "s/fable\.js?v=[a-z0-9]\{12\}/fable.js?v=$ver/" docs/index.html
+sed -i "s/locateFile: (path) => path + '?v=[a-z0-9]\{12\}'/locateFile: (path) => path + '?v=$ver'/" docs/index.html

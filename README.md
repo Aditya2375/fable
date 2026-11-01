@@ -261,7 +261,7 @@ plus a WebAssembly build on every push.
 
 ```
 src/        interpreter core (lexer, compiler, vm, gc, objects, table, chunk, value)
-wasm/       Emscripten wrapper exposing fable_boot / fable_exec
+wasm/       Emscripten wrapper exposing fable_boot / fable_exec_len
 docs/       browser demo (GitHub Pages), built from wasm/
 tests/      C unit suite, golden cases, docs check, wasm smoke test
 ```

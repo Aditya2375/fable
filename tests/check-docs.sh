@@ -22,6 +22,14 @@ lines=$(cat src/*.c src/*.h | wc -l)
 if ! grep -q "$lines lines of C" README.md; then
     echo "check-docs: README line count ($lines) missing or stale"; fail=1
 fi
+# The demo's cache-busters must match each other and the wasm content hash
+# (round-14 F1): fresh fable.js must never pair with a stale cached wasm.
+vjs=$(sed -n "s/.*fable\.js?v=\([a-z0-9]\{12\}\).*/\1/p" docs/index.html)
+vwasm=$(sed -n "s/.*'?v=\([a-z0-9]\{12\}\)'.*/\1/p" docs/index.html)
+vreal=$(sha256sum docs/fable.wasm | cut -c1-12)
+if [ -z "$vjs" ] || [ "$vjs" != "$vwasm" ] || [ "$vjs" != "$vreal" ]; then
+    echo "check-docs: demo cache-busters stale (js=$vjs wasm=$vwasm actual=$vreal): run sh wasm/build.sh"; fail=1
+fi
 # Pin the documented limits (README "Honest limits") to the code that
 # enforces them: each pair is <file with the enforcing check>|<pattern there>|<README phrase>.
 pins="
@@ -37,6 +45,7 @@ src/main.c|NUL byte in source file|NUL byte
 src/main.c|char pending[65536]|64 KB
 src/main.c|pending_start|absolute input line
 Makefile|std=gnu11|POSIX.1-2008 getline and open_memstream
+wasm/wrapper.c|fable_exec_len|fable_exec_len
 src/obj.h|FABLE_STRING_MAX|256 MB
 "
 # Phrases from removed limits must never come back (round-7 getline REPL:
