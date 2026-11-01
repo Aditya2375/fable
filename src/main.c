@@ -13,16 +13,29 @@
 static char *read_file(const char *path, int *nul_line) {
     FILE *f = fopen(path, "rb");
     if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
-    long n = ftell(f);
-    if (n < 0) { fclose(f); return NULL; }
-    rewind(f);
-    char *buf = malloc((size_t)n + 1);
+    /* Read to EOF rather than trusting st_size: pseudo-files like
+     * /proc/version report size 0 but carry content (round-11 F2), and a
+     * FIFO or directory has no usable size at all. */
+    size_t cap = 4096, n = 0;
+    char *buf = malloc(cap + 1);
     if (!buf) { fclose(f); return NULL; }
-    size_t got = fread(buf, 1, (size_t)n, f);
+    for (;;) {
+        if (n == cap) {
+            cap *= 2;
+            char *nb = realloc(buf, cap + 1);
+            if (!nb) { free(buf); fclose(f); return NULL; }
+            buf = nb;
+        }
+        size_t got = fread(buf + n, 1, cap - n, f);
+        n += got;
+        if (got == 0) {
+            if (ferror(f)) { free(buf); fclose(f); return NULL; }
+            break;   /* EOF */
+        }
+    }
     fclose(f);
-    buf[got] = '\0';
-    const char *z = memchr(buf, 0, got);
+    buf[n] = '\0';
+    const char *z = memchr(buf, 0, n);
     if (z) {
         int line = 1;
         for (const char *p = buf; p < z; p++) if (*p == '\n') line++;

@@ -92,7 +92,31 @@ out=$(awk 'BEGIN{printf "print(1"; for(i=0;i<33000;i++)printf "+1"; printf ");\n
 if [ "$rc" -eq 0 ] || ! printf '%s' "$out" | grep -q "input too long"; then
     echo "FAIL cli: over-64KB single line must error and exit nonzero (rc=$rc: $out)"; cli_fail=1
 fi
-[ "$cli_fail" -eq 0 ] && echo "cli: 15 checks passed" || fail=1
+# round-11 F2: script reading goes to EOF, never trusts st_size
+out=$("$BIN" /proc/version 2>&1) && rc=$? || rc=$?
+if [ "$rc" -eq 0 ]; then
+    echo "FAIL cli: /proc/version (st_size 0, real content) must not run as an empty program"; cli_fail=1
+fi
+fifo=/tmp/fable-fifo.$$
+mkfifo "$fifo"
+printf 'print(7);\n' > "$fifo" &
+out=$("$BIN" "$fifo" 2>&1) && rc=$? || rc=$?
+wait
+rm -f "$fifo"
+if [ "$rc" -ne 0 ] || [ "$out" != "7" ]; then
+    echo "FAIL cli: a FIFO script must be read to EOF and run (rc=$rc: $out)"; cli_fail=1
+fi
+out=$("$BIN" /tmp 2>&1) && rc=$? || rc=$?
+if [ "$rc" -eq 0 ] || ! printf '%s' "$out" | grep -q "cannot read"; then
+    echo "FAIL cli: a directory must be a clean read error (rc=$rc: $out)"; cli_fail=1
+fi
+: > /tmp/fable-empty.fable
+out=$("$BIN" /tmp/fable-empty.fable 2>&1) && rc=$? || rc=$?
+rm -f /tmp/fable-empty.fable
+if [ "$rc" -ne 0 ]; then
+    echo "FAIL cli: an empty script is a valid empty program (rc=$rc: $out)"; cli_fail=1
+fi
+[ "$cli_fail" -eq 0 ] && echo "cli: 19 checks passed" || fail=1
 
 # Depth-guard termination (round-5 HIGH1): a guard firing mid-parse must end
 # in one clean error, in every position - pre-fix these spun at 100% CPU

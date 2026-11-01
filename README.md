@@ -1,10 +1,10 @@
 # fable
 
 fable is a small, complete programming language: a tree-walk-free, bytecode
-interpreter written in C11 with no dependencies beyond libc and libm. It has
+interpreter written in C11 plus the POSIX.1-2008 getline and open_memstream functions (the Makefile builds with -std=gnu11), with no dependencies beyond libc and libm. It has
 lexically scoped variables, first-class functions, closures with shared
 upvalues, lists, strings, and a mark-sweep garbage collector. The interpreter core is
-2987 lines of C.
+3000 lines of C.
 
 Try it in your browser: **https://aditya2375.github.io/fable/** - the same C
 compiled to WebAssembly, running entirely on your machine.

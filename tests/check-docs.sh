@@ -36,6 +36,7 @@ src/main.c|input too long|input too long
 src/main.c|NUL byte in source file|NUL byte
 src/main.c|char pending[65536]|64 KB
 src/main.c|pending_start|absolute input line
+Makefile|std=gnu11|POSIX.1-2008 getline and open_memstream
 src/obj.h|FABLE_STRING_MAX|256 MB
 "
 # Phrases from removed limits must never come back (round-7 getline REPL:
