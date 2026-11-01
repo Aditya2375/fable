@@ -12,21 +12,44 @@ function ok(cond, label) {
 }
 factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } }).then(m => {
     const boot = () => m.ccall("fable_boot", "number", [], []);
-    /* Marshal with an explicit length: ccall's "string" conversion would
-     * silently truncate at a NUL (round-13 F1). Mirrors the demo page. */
+    /* Marshal input with an explicit length: ccall's "string" conversion
+     * would silently truncate at a NUL (round-13 F1). Output comes back as
+     * raw bytes from the wrapper's memstreams (round-20) - decode UTF-8
+     * non-fatally, exactly like the demo page. */
+    const td = new TextDecoder("utf-8");
+    const drain = () => {
+        const olen = m.ccall("fable_out_len", "number", [], []);
+        const optr = m.ccall("fable_out_ptr", "number", [], []);
+        const elen = m.ccall("fable_err_len", "number", [], []);
+        const eptr = m.ccall("fable_err_ptr", "number", [], []);
+        const o = td.decode(m.HEAPU8.slice(optr, optr + olen));
+        const e = td.decode(m.HEAPU8.slice(eptr, eptr + elen));
+        m.ccall("fable_out_drain", null, [], []);
+        return [o, e];
+    };
     const run = (src) => {
-        out = ""; err = "";
         const bytes = new TextEncoder().encode(src);
         const ptr = m._malloc(Math.max(bytes.length, 1));
         m.writeArrayToMemory(bytes, ptr);
         const rc = m.ccall("fable_exec_len", "number", ["number", "number"], [ptr, bytes.length]);
         m._free(ptr);
+        const [o, e] = drain();
+        out = o; err = e;
         return { rc, out, err };
     };
     ok(boot() === 0, "wasm: boot");
 
     let r = run("print(6 * 7);");
     ok(r.rc === 0 && r.out.includes("42"), "wasm: print works");
+
+    /* round-20: the demo output path is byte-faithful. The CLI writes
+     * 61 00 62 0a for print("a\0b") - one line with a NUL inside */
+    r = run('print("a\\0b");');
+    ok(r.out === "a\0b\n", "wasm: a printed NUL stays inside its line");
+    r = run('print("héllo 漢字");');
+    ok(r.out === "héllo 漢字\n", "wasm: valid UTF-8 prints unchanged");
+    r = run('let bs = "abé漢"; print(bs[3]); print(bs[4]);');
+    ok(r.out === "\uFFFD\n\uFFFD\n", "wasm: non-UTF-8 bytes decode to U+FFFD, never invented glyphs");
 
     r = run("1 + 2;");
     ok(r.out.includes("3"), "wasm: expression echoes in session mode");
@@ -282,6 +305,16 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
             { input: "if (1 < 2) {\n" + "#" + "x".repeat(65522), encoding: "utf8" });
         ok(c.stderr.includes("input too long"),
            "diff: CLI rejects pending 13 + unterminated 65523-byte tail");
+
+        /* round-20 differential: the CLI prints a NUL byte raw; the wasm
+         * session delivers the same bytes */
+        boot();
+        const wn = run('print("a\\0b");');
+        c = require("child_process").spawnSync(bin, [],
+            { input: 'print("a\\0b");\n', encoding: null });
+        ok(Buffer.from(c.stdout).equals(Buffer.from([0x61, 0x00, 0x62, 0x0a])),
+           "diff: CLI prints the NUL byte raw (61 00 62 0a)");
+        ok(wn.out === "a\0b\n", "diff: wasm delivers the same four bytes");
     } else {
         console.log("FAIL: build/fable missing - run make first for the CLI differential");
         fails = 1;
@@ -334,6 +367,21 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
 
     /* round-18 N2: 16px input font so iOS Safari does not auto-zoom on focus */
     ok(/#in \{[^}]*font:16px/.test(html), "demo: session input is 16px (no iOS auto-zoom)");
+
+    /* round-20: the page renders VM bytes faithfully - split on LF only,
+     * U+FFFD for non-UTF-8, ␀ for NUL on the same line */
+    const renderSrc = grab(/const td = new TextDecoder[\s\S]*?\n\}/, "renderBytes()");
+    if (renderSrc) {
+        const shown = [];
+        const print = t => { shown.push(t); };
+        const printErr = t => { shown.push("E:" + t); };
+        eval(renderSrc);
+        renderBytes(new Uint8Array([0x61, 0x00, 0x62, 0x0a]), false);
+        renderBytes(new Uint8Array([0x61, 0xa9, 0x0a]), false);
+        renderBytes(new TextEncoder().encode("héllo 漢字\n"), false);
+        ok(shown.join("|") === "a␀b|a\uFFFD|héllo 漢字",
+           "demo: NUL and non-UTF-8 bytes render exactly, UTF-8 unchanged");
+    }
     const bootSrc = grab(/function bootFailed\(e\)\{[\s\S]*?\n\}/, "bootFailed()");
     if (bootSrc) {
         const errs = [];

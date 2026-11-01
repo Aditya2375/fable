@@ -48,7 +48,7 @@
   their value, like the terminal REPL; a line that leaves a bracket open
   continues on the next line ("...").</p>
 </main>
-<script src="fable.js?v=f0604b580e58"></script>
+<script src="fable.js?v=63ab2798a912"></script>
 <script>
 const out = document.getElementById('out');
 const inp = document.getElementById('in');
@@ -62,6 +62,32 @@ function print(t){
   out.scrollTop = out.scrollHeight;
 }
 function printErr(t){ errNext = true; print(t); }
+/* The VM is byte-exact; the glue's default decoding is not. Read raw bytes
+   from the wrapper's memstreams, split only on LF (never NUL), decode UTF-8
+   non-fatally (an invalid byte becomes U+FFFD, deterministically), and show
+   NUL as ␀ on its own line - the same shapes the CLI writes to a terminal. */
+const td = new TextDecoder('utf-8');
+function renderBytes(bytes, isErr){
+  let start = 0;
+  for (let i = 0; i < bytes.length; i++) {
+    if (bytes[i] !== 10) continue;
+    (isErr ? printErr : print)(td.decode(bytes.subarray(start, i)).replace(/\0/g, '␀'));
+    start = i + 1;
+  }
+  if (start < bytes.length)
+    (isErr ? printErr : print)(td.decode(bytes.subarray(start)).replace(/\0/g, '␀'));
+}
+function drainOutput(){
+  const olen = M.ccall('fable_out_len', 'number', [], []);
+  const optr = M.ccall('fable_out_ptr', 'number', [], []);
+  const elen = M.ccall('fable_err_len', 'number', [], []);
+  const eptr = M.ccall('fable_err_ptr', 'number', [], []);
+  const ob = M.HEAPU8.slice(optr, optr + olen);
+  const eb = M.HEAPU8.slice(eptr, eptr + elen);
+  M.ccall('fable_out_drain', null, [], []);
+  renderBytes(ob, false);
+  renderBytes(eb, true);
+}
 function printCmd(t){
   const s = document.createElement('span'); s.className = 'cmd'; s.textContent = t + '\n';
   out.appendChild(s); out.scrollTop = out.scrollHeight;
@@ -77,6 +103,7 @@ function exec(src){
   M.writeArrayToMemory(bytes, ptr);
   const rc = M.ccall('fable_exec_len', 'number', ['number', 'number'], [ptr, bytes.length]);
   M._free(ptr);
+  drainOutput();
   return rc;
 }
 function setEcho(on){
@@ -113,7 +140,7 @@ function runProgram(name){
 /* the wasm fetch carries the same content-hash buster as the js tag, so a
    returning browser can never pair fresh glue with a stale cached wasm
    (round-14 F1); wasm/build.sh stamps both on every rebuild */
-FableModule({ print, printErr, locateFile: (path) => path + '?v=f0604b580e58' }).then(m => {
+FableModule({ print, printErr, locateFile: (path) => path + '?v=63ab2798a912' }).then(m => {
   M = m;
   M.ccall('fable_boot', null, [], []);
   out.textContent = '';

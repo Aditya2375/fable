@@ -133,7 +133,9 @@ lines are length-aware, capped only with the accumulated input at 64 KB.
 In the browser
 demo, clicking an example while a line is half-typed discards the partial
 line (and says so) instead of wedging the session, and accumulated input is
-capped at the same 64 KB (`input too long`).
+capped at the same 64 KB (`input too long`). Output is byte-faithful: valid
+UTF-8 prints unchanged, a byte that is not valid UTF-8 shows as U+FFFD, and
+a NUL byte shows as ␀ on its own line instead of splitting it.
 
 ## Errors
 
