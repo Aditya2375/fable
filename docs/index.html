@@ -48,7 +48,7 @@
   their value, like the terminal REPL; a line that leaves a bracket open
   continues on the next line ("...").</p>
 </main>
-<script src="fable.js?v=e469c042d2f7"></script>
+<script src="fable.js?v=f0604b580e58"></script>
 <script>
 const out = document.getElementById('out');
 const inp = document.getElementById('in');
@@ -113,7 +113,7 @@ function runProgram(name){
 /* the wasm fetch carries the same content-hash buster as the js tag, so a
    returning browser can never pair fresh glue with a stale cached wasm
    (round-14 F1); wasm/build.sh stamps both on every rebuild */
-FableModule({ print, printErr, locateFile: (path) => path + '?v=e469c042d2f7' }).then(m => {
+FableModule({ print, printErr, locateFile: (path) => path + '?v=f0604b580e58' }).then(m => {
   M = m;
   M.ccall('fable_boot', null, [], []);
   out.textContent = '';

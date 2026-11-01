@@ -58,8 +58,13 @@ int fable_discard_pending(void) {
 /* One input line, exactly the CLI's getline-loop semantics: NUL check with
  * the absolute session line, per-line 64 KB pending cap, append, then run
  * when the accumulated input completes. Returns 1 on error; the session
- * continues either way. */
-static int exec_line(const char *line, size_t n) {
+ * continues either way. `terminated` marks a line that ended with '\n':
+ * getline's byte count includes that newline, so the cap counts it - an
+ * unterminated tail (the demo's typed lines, or EOF on stdin) has no
+ * newline to count (round-19). The synthetic '\n' is still appended, so
+ * pending lines stay separated like the CLI's. */
+static int exec_line(const char *line, size_t n, int terminated) {
+    size_t line_bytes = n + (terminated ? 1 : 0);   /* what getline would report */
     if (memchr(line, 0, n)) {
         fprintf(stderr, "<web>:%d: NUL byte in source (source must be text)\n", web_lines + 1);
         fflush(stderr);
@@ -67,7 +72,7 @@ static int exec_line(const char *line, size_t n) {
         web_lines++;
         return 1;
     }
-    if (pending_len + n + 1 >= 65536) {
+    if (pending_len + line_bytes >= 65536) {
         fprintf(stderr, "<web>: input too long\n");
         fflush(stderr);
         pending_clear();
@@ -116,11 +121,11 @@ int fable_exec_len(const char *src, int len) {
     int start = 0, i = 0;
     while (i < len) {
         if (src[i] != '\n') { i++; continue; }
-        if (exec_line(src + start, (size_t)(i - start))) had_error = 1;
+        if (exec_line(src + start, (size_t)(i - start), 1)) had_error = 1;
         start = ++i;
     }
     if (start < len || len == 0)   /* unterminated tail; an empty call is one empty line */
-        if (exec_line(src + start, (size_t)(len - start))) had_error = 1;
+        if (exec_line(src + start, (size_t)(len - start), 0)) had_error = 1;
     fflush(stdout);
     fflush(stderr);
     return had_error ? 1 : (pending_len ? 2 : 0);

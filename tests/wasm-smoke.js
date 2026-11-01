@@ -206,6 +206,32 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
     ok(r.rc === 1 && r.err.includes("input too long") && r.out.includes("9"),
        "wasm: multi-line call drops only the over-cap line and runs the rest");
 
+    /* round-19: the 64 KB cap counts bytes exactly like getline - a
+     * trailing newline counts, an unterminated tail has none to count */
+    boot();
+    r = run("#" + "x".repeat(65534));
+    ok(r.rc === 0, "wasm: unterminated 65535-byte line accepted like the CLI");
+    boot();
+    r = run("#" + "x".repeat(65535));
+    ok(r.rc === 1 && r.err.includes("input too long"),
+       "wasm: unterminated 65536-byte line rejected like the CLI");
+    boot();
+    r = run("#" + "x".repeat(65533) + "\n");
+    ok(r.rc === 0, "wasm: terminated 65535-byte line accepted");
+    boot();
+    r = run("#" + "x".repeat(65534) + "\n");
+    ok(r.rc === 1 && r.err.includes("input too long"),
+       "wasm: terminated 65536-byte line rejected");
+    boot();
+    run("if (1 < 2) {");
+    r = run("#" + "x".repeat(65521));
+    ok(r.rc === 2, "wasm: pending 13 + unterminated 65522-byte tail accepted");
+    boot();
+    run("if (1 < 2) {");
+    r = run("#" + "x".repeat(65522));
+    ok(r.rc === 1 && r.err.includes("input too long"),
+       "wasm: pending 13 + unterminated 65523-byte tail rejected");
+
     /* round-17 F2: session differential - the same line sequence must name
      * the same absolute lines in the wasm session and the real CLI */
     const bin = require("path").join(__dirname, "..", "build", "fable");
@@ -229,13 +255,33 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
         const seq2 = ["fn f() {", "/*" + "x".repeat(65520) + "*/", "}", "print(9);"];
         boot();
         let werr2 = "", wout2 = "";
-        for (const line of seq2) { const rr = run(line); werr2 += rr.err; wout2 += rr.out; }
+        /* terminate each line like the CLI's stdin lines, so the byte counts
+         * the cap checks are identical on both sides (round-19) */
+        for (const line of seq2) { const rr = run(line + "\n"); werr2 += rr.err; wout2 += rr.out; }
         const cli2 = require("child_process").spawnSync(bin, [],
             { input: seq2.join("\n") + "\n", encoding: "utf8" });
         ok(werr2.includes("input too long") && cli2.stderr.includes("input too long"),
            "diff: both drop the straddling line");
         ok(wout2.includes("9") && cli2.stdout.includes("9"),
            "diff: both run the line after the dropped over-cap line");
+
+        /* round-19 differential: the same cap boundaries at EOF, where the
+         * CLI's final line has no newline either */
+        let c = require("child_process").spawnSync(bin, [],
+            { input: "#" + "x".repeat(65534), encoding: "utf8" });
+        ok(c.status === 0, "diff: CLI accepts the unterminated 65535-byte line");
+        c = require("child_process").spawnSync(bin, [],
+            { input: "#" + "x".repeat(65535), encoding: "utf8" });
+        ok(c.status !== 0 && c.stderr.includes("input too long"),
+           "diff: CLI rejects the unterminated 65536-byte line");
+        c = require("child_process").spawnSync(bin, [],
+            { input: "if (1 < 2) {\n" + "#" + "x".repeat(65521), encoding: "utf8" });
+        ok(!c.stderr.includes("input too long") && c.stderr.includes("unexpected end of input"),
+           "diff: CLI accepts pending 13 + unterminated 65522-byte tail");
+        c = require("child_process").spawnSync(bin, [],
+            { input: "if (1 < 2) {\n" + "#" + "x".repeat(65522), encoding: "utf8" });
+        ok(c.stderr.includes("input too long"),
+           "diff: CLI rejects pending 13 + unterminated 65523-byte tail");
     } else {
         console.log("FAIL: build/fable missing - run make first for the CLI differential");
         fails = 1;
