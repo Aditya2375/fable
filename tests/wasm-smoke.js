@@ -134,15 +134,23 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
     ok(r.out.includes("42"), "wasm: escaped closure keeps its local after an error unwind");
 
     /* round-13 F1: a NUL byte at the wasm boundary is a loud error, never
-     * a silent truncation - all three critic repros */
+     * a silent truncation - all three critic repros, with absolute session
+     * line numbers asserted exactly (round-17 F2) */
+    boot();
     r = run("print(1);\0 @@@ garbage");
-    ok(r.rc !== 0 && r.out === "" && r.err.includes("NUL byte"),
+    ok(r.rc !== 0 && r.out === "" && r.err.includes("<web>:1: NUL byte in source"),
        "wasm: NUL after valid code rejects the whole input");
     r = run("\0let lost = 1;");
-    ok(r.rc !== 0 && r.err.includes("NUL byte"), "wasm: leading NUL rejected");
+    ok(r.rc !== 0 && r.err.includes("<web>:2: NUL byte in source"),
+       "wasm: leading NUL rejected, naming the absolute session line");
     r = run("print(lost);");
-    ok(r.rc !== 0 && r.err.includes("undefined variable"),
+    ok(r.rc !== 0 && r.err.includes("<web>:3") && r.err.includes("undefined variable"),
        "wasm: nothing from a NUL-tainted line gets defined");
+    r = run("print(2);");
+    ok(r.rc === 0, "wasm: a good line after the drops");
+    r = run("\0");
+    ok(r.rc === 1 && r.err.includes("<web>:5: NUL byte in source"),
+       "wasm: NUL after good lines names the absolute session line");
     boot();
     r = run("fn nulholder() {");
     ok(r.rc === 2, "wasm: open fn leaves input pending");
@@ -178,6 +186,28 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
     ok(r.rc !== 0, "wasm: the oversized line drops the pending input, like the CLI");
     r = run("print(1 + 1);");
     ok(r.rc === 0 && r.out.includes("2"), "wasm: session survives an over-64KB rejection");
+
+    /* round-17 F2: session differential - the same line sequence must name
+     * the same absolute lines in the wasm session and the real CLI */
+    const bin = require("path").join(__dirname, "..", "build", "fable");
+    if (require("fs").existsSync(bin)) {
+        const seq = ["print(1);", "\0", "print(2);", "fn g() {", "\0",
+                     "let z = [", "nope];",
+                     "let pad = \"" + "y".repeat(70000) + "\";", "print(3);"];
+        boot();
+        const wasmErr = seq.map(line => run(line).err).join("");
+        const cli = require("child_process").spawnSync(bin, [],
+            { input: seq.join("\n") + "\n", encoding: "utf8" });
+        const lines = t => (t.match(/<(?:repl|web)>:(\d+)/g) || []).map(x => x.replace(/\D+/g, "")).join(",");
+        ok(cli.status !== 0, "diff: the CLI exits nonzero on the NUL/too-long sequence");
+        ok(lines(wasmErr) === lines(cli.stderr) && lines(wasmErr) === "2,5,7",
+           "diff: wasm and the CLI name the same absolute lines for NUL/too-long sequences");
+        ok(wasmErr.includes("input too long") && cli.stderr.includes("input too long"),
+           "diff: both reject the over-64KB line");
+    } else {
+        console.log("FAIL: build/fable missing - run make first for the CLI differential");
+        fails = 1;
+    }
 
     /* round-10 F2: the demo page must pass the input line to fable_exec
      * untrimmed (a trailing space inside a string continued across lines is
@@ -234,21 +264,12 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
            "demo: a failed boot writes the reason into the output");
     }
 
-    /* round-15 F1 / round-16 F1: the page-side NUL belt names the same
-     * absolute session line the C side computes and drops the pending input
-     * like the CLI. Extract the real exec() and drive its NUL path with
-     * stubs: session lines 1-2 are the pending statement, this is line 3. */
+    /* round-17 F1: the wrapper is the single source of truth for NUL
+     * rejection, the input cap and session line numbering - the page must
+     * not re-implement a belt whose counters can desync from the wrapper's */
     const execSrc = grab(/function exec\(src\)\{[\s\S]*?\n\}/, "exec()");
-    if (execSrc) {
-        let perr = null, discarded = 0;
-        const printErr = t => { perr = t; };
-        let sessionLines = 2, pendingStart = 1, pendingLines = 2;
-        const M = { ccall: name => { if (name === 'fable_discard_pending') discarded++; return 0; } };
-        eval("var execPage = " + execSrc);   // expression: no clash with the round-10 exec stub
-        execPage("let x = \0;");
-        ok(perr && perr.includes("<web>:3") && discarded === 1 && pendingLines === 0 && sessionLines === 3,
-           "demo: page-side NUL error matches the C-side absolute line and drops pending");
-    }
+    ok(execSrc && !execSrc.includes("indexOf") && !html.includes("pendingLines"),
+       "demo: exec() leaves NUL handling and line numbering to the wrapper");
 
     process.exit(fails);
 });

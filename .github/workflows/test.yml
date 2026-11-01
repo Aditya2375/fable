@@ -49,6 +49,7 @@ jobs:
         with:
           version: 6.0.13
       - run: sh wasm/build.sh
+      - run: make build/fable   # the smoke suite diffs wasm against the real CLI
       - run: node tests/wasm-smoke.js
       - name: committed demo matches a fresh build
         run: git diff --exit-code --stat docs/

@@ -163,6 +163,11 @@ static Value n_str(int argc, Value *argv, bool *err, char *eb, int ec) {
     char *buf = NULL;
     size_t cap = 0;
     FILE *mem = open_memstream(&buf, &cap);
+    if (!mem) {
+        *err = true;
+        snprintf(eb, (size_t)ec, "str(): out of memory rendering the value");
+        return NIL_VAL;
+    }
     value_print(mem, argv[0]);   /* argv stays rooted on the VM stack */
     fclose(mem);
     /* a rendered value past the string cap (or, theoretically, INT_MAX)

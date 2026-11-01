@@ -64,10 +64,13 @@ int fable_exec_len(const char *src, int len) {
     for (int j = 0; j < len; j++) if (src[j] == '\n') src_lines++;
     for (int i = 0; i < len; i++) {
         if (src[i] == '\0') {
-            int line = pending_start;
-            for (size_t j = 0; j < pending_len; j++) if (pending[j] == '\n') line++;
+            /* web_lines already counts every received line, pending or not,
+             * so the absolute line is the next session line plus any
+             * newlines before the NUL inside this call - the same shape and
+             * wording as the CLI's "NUL byte in source" */
+            int line = web_lines + 1;
             for (int j = 0; j < i; j++) if (src[j] == '\n') line++;
-            fprintf(stderr, "fable: <web>:%d: NUL byte in input (source must be text)\n", line);
+            fprintf(stderr, "fable: <web>:%d: NUL byte in source (source must be text)\n", line);
             fflush(stderr);
             pending_clear();   /* a dropped line corrupts any pending input, like the CLI */
             web_lines += src_lines;   /* the dropped lines still consumed session lines */
@@ -90,6 +93,7 @@ int fable_exec_len(const char *src, int len) {
             fprintf(stderr, "fable: <web>: out of memory receiving input\n");
             fflush(stderr);
             pending_clear();   /* the half-received statement cannot complete */
+            web_lines += src_lines;   /* the dropped lines still consumed session lines */
             return 1;
         }
         pending = np;

@@ -82,7 +82,17 @@ printf 'print(1);\n' > "$qdir/script.fable"
 printf 'print(2);\n' > "$qdir/x.fable"
 sed -n '/^## Quick start/,/^## /p' README.md \
   | sed -n '/^```sh/,/^```$/p' | grep -v '^```' \
-  | sed 's/[[:space:]]*#.*$//' | grep -v '^[[:space:]]*$' \
+  | awk '{ out=""; sq=0; dq=0; q=sprintf("%c",39);
+      for (i = 1; i <= length($0); i++) {
+        c = substr($0, i, 1);
+        if (c == q && !dq) sq = !sq;
+        else if (c == "\"" && !sq) dq = !dq;
+        else if (c == "#" && !sq && !dq) break;
+        out = out c;
+      }
+      sub(/[[:space:]]+$/, "", out);
+      if (out != "") print out;
+    }' \
   | while IFS= read -r cmd; do
       case "$cmd" in make*) continue ;; esac
       if ! (cd "$qdir" && eval "$cmd" </dev/null >/dev/null 2>&1); then

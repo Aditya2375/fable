@@ -48,18 +48,12 @@
   their value, like the terminal REPL; a line that leaves a bracket open
   continues on the next line ("...").</p>
 </main>
-<script src="fable.js?v=52ea04e45e0a"></script>
+<script src="fable.js?v=7a69d6258713"></script>
 <script>
 const out = document.getElementById('out');
 const inp = document.getElementById('in');
 let M = null;
 let errNext = false;
-/* mirror the wrapper's session line numbering (the same absolute lines the
-   terminal REPL reports): sessionLines counts every line sent this session,
-   pendingStart is the session line where the half-typed statement began and
-   pendingLines how many lines of it are waiting, so the page-side NUL belt
-   names the same line the wasm side would */
-let sessionLines = 0, pendingStart = 1, pendingLines = 0;
 /* emscripten calls print once per output line WITHOUT the trailing newline,
    so each call appends one full line. */
 function print(t){
@@ -73,33 +67,16 @@ function printCmd(t){
   out.appendChild(s); out.scrollTop = out.scrollHeight;
 }
 function exec(src){
-  /* belt: the wasm boundary rejects NUL with the same error; a JS string
-     can carry one, and a C string cannot */
-  const nul = src.indexOf('\0');
-  const lineCount = src.split('\n').length;
-  if (nul >= 0) {
-    /* the same absolute line the wasm side computes, then drop the pending
-       input like the CLI: a NUL-tainted line corrupts any half-typed input */
-    const line = pendingStart + pendingLines + src.slice(0, nul).split('\n').length - 1;
-    printErr('fable: <web>:' + line + ': NUL byte in input (source must be text)');
-    M.ccall('fable_discard_pending', 'number', [], []);
-    sessionLines += lineCount;
-    pendingLines = 0;
-    return 1;
-  }
   /* marshal with an explicit length - ccall's 'string' conversion would
-     silently truncate at a NUL */
+     silently truncate at a NUL. The wrapper itself rejects NUL bytes, caps
+     accumulated input and numbers session lines: one source of truth, no
+     page-side mirror to desync. */
   const bytes = new TextEncoder().encode(src);
   const ptr = M._malloc(Math.max(bytes.length, 1));
   if (!ptr) { printErr('fable: out of memory sending input to the interpreter'); return 1; }
   M.writeArrayToMemory(bytes, ptr);
-  if (pendingLines === 0) pendingStart = sessionLines + 1;
   const rc = M.ccall('fable_exec_len', 'number', ['number', 'number'], [ptr, bytes.length]);
   M._free(ptr);
-  /* mirror the wrapper's pending buffer: rc 2 means the statement is still
-     incomplete and stays pending; anything else cleared it */
-  sessionLines += lineCount;
-  pendingLines = rc === 2 ? pendingLines + lineCount : 0;
   return rc;
 }
 function setEcho(on){
@@ -119,12 +96,10 @@ const programs = {
 function runProgram(name){
   if (name === 'reset') {
     M.ccall('fable_boot', null, [], []);
-    sessionLines = 0; pendingStart = 1; pendingLines = 0;
     printCmd('fable> <session reset>');
     return;
   }
   const discarded = M.ccall('fable_discard_pending', 'number', [], []);
-  pendingLines = 0;
   if (discarded) print('(discarded incomplete input)');
   const src = programs[name];
   const chunks = Array.isArray(src) ? src : [src];
@@ -138,7 +113,7 @@ function runProgram(name){
 /* the wasm fetch carries the same content-hash buster as the js tag, so a
    returning browser can never pair fresh glue with a stale cached wasm
    (round-14 F1); wasm/build.sh stamps both on every rebuild */
-FableModule({ print, printErr, locateFile: (path) => path + '?v=52ea04e45e0a' }).then(m => {
+FableModule({ print, printErr, locateFile: (path) => path + '?v=7a69d6258713' }).then(m => {
   M = m;
   M.ccall('fable_boot', null, [], []);
   out.textContent = '';
