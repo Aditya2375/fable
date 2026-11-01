@@ -16,6 +16,7 @@
   #out { height:340px; overflow-y:auto; overflow-wrap:anywhere; padding:.8rem; font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre-wrap; color:#7ee787; }
   #out .cmd { color:#58a6ff; }
   #out .err { color:#f85149; }
+  #out .trim { color:#8b949e; font-style:italic; }
   #in { width:100%; box-sizing:border-box; background:transparent; border:0; border-top:1px solid #30363d; color:#c9d1d9; padding:.6rem .8rem; font:16px ui-monospace,monospace; outline:none; }   /* 16px: iOS Safari auto-zooms focused inputs under that */
   .btns { display:flex; flex-wrap:wrap; gap:.5rem; margin-top:1rem; }
   button { background:#21262d; color:#d2a8ff; border:1px solid #30363d; border-radius:6px; padding:.45rem .8rem; font:12px ui-monospace,monospace; cursor:pointer; }
@@ -48,60 +49,146 @@
   their value, like the terminal REPL; a line that leaves a bracket open
   continues on the next line ("...").</p>
 </main>
-<script src="fable.js?v=63ab2798a912"></script>
+<script src="fable.js?v=93c2e5289c38"></script>
 <script>
 const out = document.getElementById('out');
 const inp = document.getElementById('in');
 let M = null;
 let errNext = false;
-/* emscripten calls print once per output line WITHOUT the trailing newline,
-   so each call appends one full line. */
-function print(t){
-  if (errNext) { const s = document.createElement('span'); s.className = 'err'; s.textContent = t + '\n'; out.appendChild(s); errNext = false; }
-  else out.appendChild(document.createTextNode(t + '\n'));
+let sessionDead = false;   /* the interpreter itself died (OOM exit); only "reset session" revives it */
+const MAX_LINES = 5000;    /* DOM cap: older lines drop behind a trim marker, so a huge loop cannot bloat the tab */
+let shownLines = 0, trimmedLines = 0;
+let trimMarker = null;
+/* One DOM flush per drain: decoded runs land in a single fragment - one
+   appendChild and one scrollTop, never one synchronous layout per printed
+   line (round-21 F1). */
+function appendRuns(runs){
+  const frag = document.createDocumentFragment();
+  let added = 0;
+  for (let i = 0; i < runs.length; i++) {
+    /* one node per 500-line chunk: still a single appendChild for the whole
+       drain, but the cap can trim old output in chunks instead of all-or-
+       nothing (a 20000-line drain keeps its newest 5000 lines) */
+    const t = runs[i].text;
+    const m = t.match(/\n/g);
+    if (m) added += m.length;
+    let pos = 0;
+    while (pos < t.length) {
+      let end = pos;
+      for (let j = 0; j < 500 && end < t.length; j++) {
+        const nl = t.indexOf('\n', end);
+        if (nl === -1) { end = t.length; break; }
+        end = nl + 1;
+      }
+      const piece = t.slice(pos, end);
+      pos = end;
+      if (runs[i].err) {
+        const s = document.createElement('span');
+        s.className = 'err';
+        s.textContent = piece;
+        frag.appendChild(s);
+      } else frag.appendChild(document.createTextNode(piece));
+    }
+  }
+  out.appendChild(frag);
+  shownLines += added;
+  while (shownLines > MAX_LINES) {
+    const first = trimMarker && trimMarker.parentNode === out ? trimMarker.nextSibling : out.firstChild;
+    if (!first) break;
+    const fm = (first.textContent.match(/\n/g) || []).length;
+    trimmedLines += fm || 1;   /* a node without a newline still occupies one row */
+    shownLines -= fm || 1;
+    out.removeChild(first);
+  }
+  if (trimmedLines) {
+    if (!trimMarker) {
+      trimMarker = document.createElement('div');
+      trimMarker.className = 'trim';
+    }
+    trimMarker.textContent = '... ' + trimmedLines + ' earlier lines trimmed\n';
+    if (trimMarker.parentNode !== out) out.insertBefore(trimMarker, out.firstChild);
+  }
   out.scrollTop = out.scrollHeight;
 }
+/* emscripten calls print once per output line WITHOUT the trailing newline,
+   so each call appends one full line, through the same one-flush batcher. */
+function print(t){
+  const err = errNext; errNext = false;
+  appendRuns([{ text: t + '\n', err: err }]);
+}
 function printErr(t){ errNext = true; print(t); }
-/* The VM is byte-exact; the glue's default decoding is not. Read raw bytes
-   from the wrapper's memstreams, split only on LF (never NUL), decode UTF-8
-   non-fatally (an invalid byte becomes U+FFFD, deterministically), and show
-   NUL as ␀ on its own line - the same shapes the CLI writes to a terminal. */
+/* The VM is byte-exact; the glue's default decoding is not, and two separate
+   memstreams would lose the stdout/stderr interleave order within one exec.
+   The wrapper therefore hands over ONE combined byte stream: a sequence of
+   records [1 byte tag: 0 = stdout, 1 = stderr][4 bytes little-endian
+   length][payload] in exact write order (round-21 F2). Adjacent same-tag
+   records merge and each run's bytes decode once, UTF-8 non-fatally (an
+   invalid byte becomes U+FFFD, deterministically), with a NUL shown as ␀ in
+   place, never splitting the line - the same shapes the CLI writes. */
 const td = new TextDecoder('utf-8');
-function renderBytes(bytes, isErr){
-  let start = 0;
-  for (let i = 0; i < bytes.length; i++) {
-    if (bytes[i] !== 10) continue;
-    (isErr ? printErr : print)(td.decode(bytes.subarray(start, i)).replace(/\0/g, '␀'));
-    start = i + 1;
+function renderTagged(bytes){
+  const runs = [];
+  let i = 0, cur = -1, parts = [];
+  const flush = () => {
+    if (!parts.length) return;
+    let total = 0;
+    for (let j = 0; j < parts.length; j++) total += parts[j].length;
+    const all = new Uint8Array(total);
+    let o = 0;
+    for (let j = 0; j < parts.length; j++) { all.set(parts[j], o); o += parts[j].length; }
+    runs.push({ text: td.decode(all).replace(/\0/g, '␀'), err: cur === 1 });
+    parts = [];
+  };
+  while (i + 5 <= bytes.length) {
+    const tag = bytes[i];
+    const n = bytes[i + 1] | (bytes[i + 2] << 8) | (bytes[i + 3] << 16) | (bytes[i + 4] << 24);
+    i += 5;
+    if (i + n > bytes.length) break;   /* a truncated record is dropped, never invented bytes */
+    if (tag !== cur) { flush(); cur = tag; }
+    parts.push(bytes.subarray(i, i + n));
+    i += n;
   }
-  if (start < bytes.length)
-    (isErr ? printErr : print)(td.decode(bytes.subarray(start)).replace(/\0/g, '␀'));
+  flush();
+  if (runs.length) appendRuns(runs);
 }
 function drainOutput(){
-  const olen = M.ccall('fable_out_len', 'number', [], []);
-  const optr = M.ccall('fable_out_ptr', 'number', [], []);
-  const elen = M.ccall('fable_err_len', 'number', [], []);
-  const eptr = M.ccall('fable_err_ptr', 'number', [], []);
-  const ob = M.HEAPU8.slice(optr, optr + olen);
-  const eb = M.HEAPU8.slice(eptr, eptr + elen);
+  const len = M.ccall('fable_out_len', 'number', [], []);
+  const ptr = M.ccall('fable_out_ptr', 'number', [], []);
+  const bytes = len > 0 ? M.HEAPU8.slice(ptr, ptr + len) : new Uint8Array(0);
   M.ccall('fable_out_drain', null, [], []);
-  renderBytes(ob, false);
-  renderBytes(eb, true);
+  renderTagged(bytes);
 }
 function printCmd(t){
   const s = document.createElement('span'); s.className = 'cmd'; s.textContent = t + '\n';
-  out.appendChild(s); out.scrollTop = out.scrollHeight;
+  out.appendChild(s); shownLines++; out.scrollTop = out.scrollHeight;
 }
 function exec(src){
   /* marshal with an explicit length - ccall's 'string' conversion would
      silently truncate at a NUL. The wrapper itself rejects NUL bytes, caps
      accumulated input and numbers session lines: one source of truth, no
      page-side mirror to desync. */
+  if (sessionDead) return 1;
   const bytes = new TextEncoder().encode(src);
   const ptr = M._malloc(Math.max(bytes.length, 1));
   if (!ptr) { printErr('fable: out of memory sending input to the interpreter'); return 1; }
   M.writeArrayToMemory(bytes, ptr);
-  const rc = M.ccall('fable_exec_len', 'number', ['number', 'number'], [ptr, bytes.length]);
+  let rc;
+  try {
+    rc = M.ccall('fable_exec_len', 'number', ['number', 'number'], [ptr, bytes.length]);
+  } catch (e) {
+    M._free(ptr);
+    drainOutput();
+    if (e && e.name === 'ExitStatus') {
+      /* the interpreter's own OOM guard (exit(70) in vm.c/gc.c) unwinds the
+         wasm stack mid-operation; the VM state cannot be trusted, so the
+         session is dead until "reset session" boots a fresh one (round-21 F5) */
+      sessionDead = true;
+      inp.disabled = true;
+      printErr('fable: the interpreter ran out of memory; the session ended - press "reset session" to start a new one');
+      return 1;
+    }
+    throw e;
+  }
   M._free(ptr);
   drainOutput();
   return rc;
@@ -123,9 +210,13 @@ const programs = {
 function runProgram(name){
   if (name === 'reset') {
     M.ccall('fable_boot', null, [], []);
+    sessionDead = false;   /* a fresh VM: the session lives again */
+    inp.disabled = false;
     printCmd('fable> <session reset>');
     return;
   }
+  if (sessionDead) return;   /* examples need a live interpreter */
+
   const discarded = M.ccall('fable_discard_pending', 'number', [], []);
   if (discarded) print('(discarded incomplete input)');
   const src = programs[name];
@@ -140,7 +231,7 @@ function runProgram(name){
 /* the wasm fetch carries the same content-hash buster as the js tag, so a
    returning browser can never pair fresh glue with a stale cached wasm
    (round-14 F1); wasm/build.sh stamps both on every rebuild */
-FableModule({ print, printErr, locateFile: (path) => path + '?v=63ab2798a912' }).then(m => {
+FableModule({ print, printErr, locateFile: (path) => path + '?v=93c2e5289c38' }).then(m => {
   M = m;
   M.ccall('fable_boot', null, [], []);
   out.textContent = '';

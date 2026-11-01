@@ -1,10 +1,15 @@
 /* emscripten wrapper: paste the CLI into this translation unit and expose a
  * tiny session API to JavaScript. The VM persists between fable_exec calls
  * so definitions carry over; fable_boot builds a fresh VM. */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE   /* open_memstream + fopencookie prototypes (also native tests) */
+#endif
 #define main fable_cli_main
 #include "../src/main.c"
 #undef main
 #include <emscripten.h>
+#include <stdint.h>
+#include <sys/types.h>
 
 static void pending_clear(void);
 
@@ -16,23 +21,52 @@ static void pending_clear(void);
 static int web_lines = 0;
 static int pending_start = 1;
 
-/* The VM writes to memstreams, not emscripten's stdout/stderr: the glue's
- * print path flushes on NUL (splitting a printed line in two) and decodes
- * invalid UTF-8 into invented glyphs. The page reads the raw bytes through
- * fable_out_ptr/len + fable_err_ptr/len + fable_out_drain and decodes them
- * deterministically (round-20). */
-static FILE *wout = NULL, *werr = NULL;
-static char *wout_buf = NULL, *werr_buf = NULL;
-static size_t wout_len = 0, werr_len = 0;
+/* The VM writes to one combined byte stream, not emscripten's
+ * stdout/stderr: the glue's print path flushes on NUL (splitting a printed
+ * line in two), decodes invalid UTF-8 into invented glyphs, and two
+ * separate streams would lose the stdout/stderr interleave order within
+ * one fable_exec_len call. So vm.out and vm.err are fopencookie streams
+ * over a single memstream; every write appends one record -
+ *   [1 byte tag: 0 = stdout, 1 = stderr][4 bytes little-endian length][payload]
+ * and the page walks the records in write order, merging adjacent same-tag
+ * runs (round-20 byte-faithfulness, round-21 F2 order). fable_out_ptr/len
+ * hand the page the record buffer; fable_out_drain starts a fresh one. */
+static FILE *wbuf = NULL;              /* the combined record memstream */
+static char *wbuf_bytes = NULL;
+static size_t wbuf_len = 0;
+static FILE *wout = NULL, *werr = NULL;   /* unbuffered cookie streams over wbuf */
 
-static void streams_open(void) {
-    wout = open_memstream(&wout_buf, &wout_len);
-    werr = open_memstream(&werr_buf, &werr_len);
-    if (!wout || !werr) {   /* memstream OOM: fall back to the glue's streams */
-        wout = stdout;
-        werr = stderr;
-        wout_buf = werr_buf = NULL;
-    }
+static ssize_t wbuf_write(void *cookie, const char *data, size_t n) {
+    unsigned char hdr[5];
+    if (n == 0) return 0;   /* an fflush pokes a zero-length write: no record */
+    hdr[0] = (unsigned char)(uintptr_t)cookie;   /* 0 = stdout, 1 = stderr */
+    hdr[1] = (unsigned char)(n & 0xff);
+    hdr[2] = (unsigned char)((n >> 8) & 0xff);
+    hdr[3] = (unsigned char)((n >> 16) & 0xff);
+    hdr[4] = (unsigned char)((n >> 24) & 0xff);
+    if (fwrite(hdr, 1, sizeof hdr, wbuf) < sizeof hdr) return -1;
+    if (fwrite(data, 1, n, wbuf) < n) return -1;
+    return (ssize_t)n;
+}
+
+/* Returns 1 on the byte-faithful tagged path, 0 on the glue-stream
+ * fallback. A partial failure cleans up whatever did open before falling
+ * back - no leaked stream or buffer (round-21 F3). */
+static int streams_open(void) {
+    static const cookie_io_functions_t io = { NULL, wbuf_write, NULL, NULL };
+    wbuf = open_memstream(&wbuf_bytes, &wbuf_len);
+    wout = wbuf ? fopencookie((void *)(uintptr_t)0, "w", io) : NULL;
+    werr = wbuf ? fopencookie((void *)(uintptr_t)1, "w", io) : NULL;
+    if (wout) setvbuf(wout, NULL, _IONBF, 0);   /* per-write records keep the interleave order */
+    if (werr) setvbuf(werr, NULL, _IONBF, 0);
+    if (wbuf && wout && werr) return 1;
+    if (werr) fclose(werr);
+    if (wout) fclose(wout);
+    if (wbuf) { fclose(wbuf); free(wbuf_bytes); }
+    wbuf = NULL; wbuf_bytes = NULL; wbuf_len = 0;
+    wout = stdout;   /* memstream/cookie OOM: fall back to the glue's streams */
+    werr = stderr;
+    return 0;
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -40,37 +74,40 @@ int fable_boot(void) {
     static int booted = 0;
     if (booted) {
         vm_free();
-        if (wout_buf) { fclose(wout); free(wout_buf); }
-        if (werr_buf) { fclose(werr); free(werr_buf); }
+        if (wbuf) {
+            fclose(werr);
+            fclose(wout);
+            fclose(wbuf);
+            free(wbuf_bytes);
+        }
     }
     pending_clear();
     web_lines = 0;
     pending_start = 1;
     booted = 1;
-    streams_open();
+    if (!streams_open())
+        fprintf(stderr, "fable: warning: output capture unavailable (out of memory); output decoding is approximate\n");
     vm_init(wout, werr);
     vm.repl = true;   /* expression statements echo, like the terminal REPL */
     return 0;
 }
 
-/* The pointers are only valid until the next VM write (the memstream may
- * reallocate), so the page copies the bytes and then drains. */
+/* The pointer is only valid until the next VM write (the memstream may
+ * reallocate), so the page copies the bytes and then drains. On the
+ * fallback path there is no buffer: NULL/0, and the glue's print/printErr
+ * carry output instead. */
 EMSCRIPTEN_KEEPALIVE
-const char *fable_out_ptr(void) { fflush(wout); return wout_buf; }
+const char *fable_out_ptr(void) { if (wbuf) fflush(wbuf); return wbuf_bytes; }
 EMSCRIPTEN_KEEPALIVE
-int fable_out_len(void) { fflush(wout); return wout_buf ? (int)wout_len : 0; }
-EMSCRIPTEN_KEEPALIVE
-const char *fable_err_ptr(void) { fflush(werr); return werr_buf; }
-EMSCRIPTEN_KEEPALIVE
-int fable_err_len(void) { fflush(werr); return werr_buf ? (int)werr_len : 0; }
+int fable_out_len(void) { if (wbuf) fflush(wbuf); return wbuf_bytes ? (int)wbuf_len : 0; }
 
 EMSCRIPTEN_KEEPALIVE
 void fable_out_drain(void) {
-    if (!wout_buf) return;   /* fallback streams: nothing buffered */
-    fclose(wout);
-    free(wout_buf);
+    if (!wbuf) return;   /* fallback streams: nothing buffered */
     fclose(werr);
-    free(werr_buf);
+    fclose(wout);
+    fclose(wbuf);
+    free(wbuf_bytes);
     streams_open();
     vm.out = wout;
     vm.err = werr;
@@ -114,14 +151,14 @@ static int exec_line(const char *line, size_t n, int terminated) {
     size_t line_bytes = n + (terminated ? 1 : 0);   /* what getline would report */
     if (memchr(line, 0, n)) {
         fprintf(werr, "<web>:%d: NUL byte in source (source must be text)\n", web_lines + 1);
-        fflush(stderr);
+        fflush(werr);
         pending_clear();   /* a dropped line corrupts any pending input, like the CLI */
         web_lines++;
         return 1;
     }
     if (pending_len + line_bytes >= 65536) {
         fprintf(werr, "<web>: input too long\n");
-        fflush(stderr);
+        fflush(werr);
         pending_clear();
         web_lines++;
         return 1;
@@ -131,7 +168,7 @@ static int exec_line(const char *line, size_t n, int terminated) {
         char *np = realloc(pending, new_cap);   /* temp: a failed realloc must not leak the old buffer */
         if (!np) {
             fprintf(werr, "<web>: out of memory receiving input\n");
-            fflush(stderr);
+            fflush(werr);
             pending_clear();   /* the half-received statement cannot complete */
             web_lines++;
             return 1;

@@ -14,18 +14,34 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
     const boot = () => m.ccall("fable_boot", "number", [], []);
     /* Marshal input with an explicit length: ccall's "string" conversion
      * would silently truncate at a NUL (round-13 F1). Output comes back as
-     * raw bytes from the wrapper's memstreams (round-20) - decode UTF-8
-     * non-fatally, exactly like the demo page. */
+     * raw bytes from the wrapper's combined tagged stream (round-20/21) -
+     * decode UTF-8 non-fatally, exactly like the demo page. */
     const td = new TextDecoder("utf-8");
+    /* round-21 F2: the wrapper hands over ONE combined stream of records -
+     * [1 byte tag: 0 = stdout, 1 = stderr][4 bytes LE length][payload] - in
+     * exact write order. Decode each record non-fatally, exactly like the
+     * demo page, and keep the merged run list for order assertions. */
     const drain = () => {
-        const olen = m.ccall("fable_out_len", "number", [], []);
-        const optr = m.ccall("fable_out_ptr", "number", [], []);
-        const elen = m.ccall("fable_err_len", "number", [], []);
-        const eptr = m.ccall("fable_err_ptr", "number", [], []);
-        const o = td.decode(m.HEAPU8.slice(optr, optr + olen));
-        const e = td.decode(m.HEAPU8.slice(eptr, eptr + elen));
+        const len = m.ccall("fable_out_len", "number", [], []);
+        const ptr = m.ccall("fable_out_ptr", "number", [], []);
+        const buf = len > 0 ? m.HEAPU8.slice(ptr, ptr + len) : new Uint8Array(0);
         m.ccall("fable_out_drain", null, [], []);
-        return [o, e];
+        const merged = [];
+        let i = 0;
+        while (i + 5 <= buf.length) {
+            const tag = buf[i];
+            const n = buf[i+1] | (buf[i+2] << 8) | (buf[i+3] << 16) | (buf[i+4] << 24);
+            i += 5;
+            if (i + n > buf.length) break;
+            if (merged.length && merged[merged.length - 1][0] === (tag === 1))
+                merged[merged.length - 1][1] += td.decode(buf.subarray(i, i + n));
+            else
+                merged.push([tag === 1, td.decode(buf.subarray(i, i + n))]);
+            i += n;
+        }
+        const o = merged.filter(r => !r[0]).map(r => r[1]).join("");
+        const e = merged.filter(r => r[0]).map(r => r[1]).join("");
+        return [o, e, merged];
     };
     const run = (src) => {
         const bytes = new TextEncoder().encode(src);
@@ -33,9 +49,9 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
         m.writeArrayToMemory(bytes, ptr);
         const rc = m.ccall("fable_exec_len", "number", ["number", "number"], [ptr, bytes.length]);
         m._free(ptr);
-        const [o, e] = drain();
+        const [o, e, merged] = drain();
         out = o; err = e;
-        return { rc, out, err };
+        return { rc, out, err, merged };
     };
     ok(boot() === 0, "wasm: boot");
 
@@ -315,6 +331,22 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
         ok(Buffer.from(c.stdout).equals(Buffer.from([0x61, 0x00, 0x62, 0x0a])),
            "diff: CLI prints the NUL byte raw (61 00 62 0a)");
         ok(wn.out === "a\0b\n", "diff: wasm delivers the same four bytes");
+
+        /* round-21 F2: stdout/stderr interleave order survives one exec.
+         * CLI with 2>&1 on a pipe: the unbuffered stderr error lands before
+         * the buffered stdout flush at exit. The wasm session must deliver
+         * the same order through its tagged records. */
+        boot();
+        const wi = run('badcall();\nprint("after");');
+        ok(wi.merged.length === 2 && wi.merged[0][0] === true && wi.merged[1][0] === false
+           && wi.merged[0][1].includes("<web>:1:") && wi.merged[1][1] === "after\n",
+           "wasm: error then stdout, in write order, within one exec");
+        c = require("child_process").spawnSync("sh", ["-c", '"' + bin + '" 2>&1'],
+            { input: 'badcall();\nprint("after");\n', encoding: "utf8" });
+        ok(c.stdout.indexOf("<repl>:1:") !== -1 && c.stdout.indexOf("after") > c.stdout.indexOf("<repl>:1:"),
+           "diff: the CLI interleaves the same way (error before after)");
+        ok(wi.merged.map(([, t]) => t).join("").replace(/<web>/, "<repl>") === c.stdout,
+           "diff: wasm and CLI merged streams match exactly");
     } else {
         console.log("FAIL: build/fable missing - run make first for the CLI differential");
         fails = 1;
@@ -370,17 +402,84 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
 
     /* round-20: the page renders VM bytes faithfully - split on LF only,
      * U+FFFD for non-UTF-8, ␀ for NUL on the same line */
-    const renderSrc = grab(/const td = new TextDecoder[\s\S]*?\n\}/, "renderBytes()");
+    /* round-21 F1/F2: the page renderer - one DOM flush per drain, a DOM
+     * cap with a trim marker, and in-order stdout/stderr runs. Extract the
+     * real block (errNext..renderTagged) and drive it with a stub DOM. */
+    const renderSrc = grab(/let errNext = false;[\s\S]*?\n\}\nfunction drainOutput/, "the renderer block");
     if (renderSrc) {
-        const shown = [];
-        const print = t => { shown.push(t); };
-        const printErr = t => { shown.push("E:" + t); };
-        eval(renderSrc);
-        renderBytes(new Uint8Array([0x61, 0x00, 0x62, 0x0a]), false);
-        renderBytes(new Uint8Array([0x61, 0xa9, 0x0a]), false);
-        renderBytes(new TextEncoder().encode("héllo 漢字\n"), false);
-        ok(shown.join("|") === "a␀b|a\uFFFD|héllo 漢字",
-           "demo: NUL and non-UTF-8 bytes render exactly, UTF-8 unchanged");
+        const body = renderSrc.slice(0, renderSrc.lastIndexOf("function drainOutput"));
+        let appends = 0, scrolls = 0;
+        const nodes = [];
+        const syncMarker = () => { if (markerNode) markerNode.nextSibling = nodes[nodes.indexOf(markerNode) + 1] || null; };
+        let markerNode = null;
+        const out = {
+            appendChild(n) { appends++; if (n.children) nodes.push(...n.children); else nodes.push(n); },
+            insertBefore(n) { appends++; nodes.unshift(n); n.parentNode = out; markerNode = n; syncMarker(); },
+            removeChild(n) { nodes.splice(nodes.indexOf(n), 1); syncMarker(); },
+            get firstChild() { return nodes[0] || null; },
+            get scrollTop() { return 0; },
+            set scrollTop(v) { scrollSets++; },
+            scrollHeight: 100, textContent: ""
+        };
+        let scrollSets = 0;
+        const document = {
+            createElement: () => ({ className: "", textContent: "", parentNode: null, nextSibling: null }),
+            createTextNode: t => ({ textContent: t }),
+            createDocumentFragment: () => ({ children: [], appendChild(n) { this.children.push(n); } })
+        };
+        let __state = null, __reset = null;
+        eval(body + "\n__state = () => ({ shownLines, trimmedLines });\n__reset = () => { shownLines = 0; trimmedLines = 0; trimMarker = null; };");
+        const rec = (tag, s) => {
+            const p = new TextEncoder().encode(s);
+            const b = new Uint8Array(5 + p.length);
+            b[0] = tag;
+            b[1] = p.length & 255; b[2] = (p.length >> 8) & 255; b[3] = (p.length >> 16) & 255; b[4] = (p.length >> 24) & 255;
+            b.set(p, 5);
+            return b;
+        };
+        const cat = (...bs) => {
+            const all = new Uint8Array(bs.reduce((n, b) => n + b.length, 0));
+            let o = 0;
+            for (const b of bs) { all.set(b, o); o += b.length; }
+            return all;
+        };
+        /* byte-faithful shapes through the tagged protocol */
+        appends = 0; scrollSets = 0;
+        const recRaw = (tag, p) => {
+            const b = new Uint8Array(5 + p.length);
+            b[0] = tag;
+            b[1] = p.length & 255; b[2] = (p.length >> 8) & 255; b[3] = (p.length >> 16) & 255; b[4] = (p.length >> 24) & 255;
+            b.set(p, 5);
+            return b;
+        };
+        renderTagged(cat(rec(0, "a\0b\n"), rec(0, "héllo 漢字\n"), recRaw(1, new Uint8Array([0x61, 0xa9, 0x0a]))));
+        const text = nodes.map(n => n.textContent).join("");
+        ok(text === "a␀b\nhéllo 漢字\na\uFFFD\n",
+           "demo: tagged records render exactly - NUL in place, U+FFFD, UTF-8 unchanged");
+        ok(appends === 1, "demo: one appendChild per drain, not one per line");
+        ok(scrollSets === 1, "demo: one scroll per drain, not one per line");
+        /* interleave order: err record between two out records stays in place */
+        nodes.length = 0;
+        renderTagged(cat(rec(0, "before\n"), rec(1, "oops\n"), rec(0, "after\n")));
+        ok(nodes.map(n => n.textContent).join("") === "before\noops\nafter\n",
+           "demo: stdout/stderr interleave order preserved (round-21 F2)");
+        ok(nodes[1].className === "err", "demo: the error run keeps its styling");
+        /* F1 perf + cap: 20000 printed lines in one drain */
+        nodes.length = 0; appends = 0; scrollSets = 0;
+        __reset();
+        let big = "";
+        for (let i = 0; i < 20000; i++) big += i + "\n";
+        const t0 = Date.now();
+        renderTagged(rec(0, big));
+        const dt = Date.now() - t0;
+        const st = __state();
+        ok(dt < 5000, "demo: 20000-line drain renders fast (" + dt + " ms, budget 5000)");
+        ok(appends <= 2, "demo: one append for 20000 lines (plus the trim marker)");
+        ok(scrollSets === 1, "demo: one scroll for 20000 lines");
+        ok(st.trimmedLines === 15000 && st.shownLines === 5000,
+           "demo: DOM capped at 5000 lines with 15000 trimmed");
+        ok(nodes.length === 11 && nodes[0].textContent.includes("15000 earlier lines trimmed"),
+           "demo: a trim marker names the dropped line count, newest 5000 lines kept");
     }
     const bootSrc = grab(/function bootFailed\(e\)\{[\s\S]*?\n\}/, "bootFailed()");
     if (bootSrc) {
@@ -399,6 +498,45 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
     const execSrc = grab(/function exec\(src\)\{[\s\S]*?\n\}/, "exec()");
     ok(execSrc && !execSrc.includes("indexOf") && !html.includes("pendingLines"),
        "demo: exec() leaves NUL handling and line numbering to the wrapper");
+
+    /* round-21 F5: an interpreter OOM (exit(70) from vm.c/gc.c) throws
+     * ExitStatus through ccall; the page must end the session cleanly -
+     * clear message, input locked - and "reset session" must revive it.
+     * Extract the real exec() + runProgram() and drive them with stubs. */
+    const execSrc2 = grab(/function exec\(src\)\{[\s\S]*?\n\}/, "exec()");
+    const rpSrc = grab(/function runProgram\(name\)\{[\s\S]*?\n\}/, "runProgram()");
+    if (execSrc2 && rpSrc) {   /* own scope: the stubs shadow the round-10 names */
+        const inp2 = { disabled: false };
+        const errs2 = [];
+        const printErr2 = t => { errs2.push(t); };
+        const printCmd2 = () => {};
+        let bootCalls = 0, execCalls = 0;
+        const M2 = {
+            _malloc: () => 64,
+            _free: () => {},
+            writeArrayToMemory: () => {},
+            HEAPU8: new Uint8Array(0),
+            ccall: (name) => {
+                if (name === "fable_boot") { bootCalls++; return 0; }
+                if (name === "fable_exec_len") { execCalls++; throw { name: "ExitStatus", status: 70 }; }
+                return 0;
+            }
+        };
+        const drainOutput2 = () => {};
+        let sessionDead = false;
+        const inp = inp2, M = M2, printErr = printErr2, printCmd = printCmd2, drainOutput = drainOutput2;
+        const setEcho = () => {};
+        const programs = {};
+        const fns = eval("(function(){" + execSrc2 + "\n" + rpSrc + "\nreturn { exec, runProgram }; })")();
+        ok(fns.exec("print(1);") === 1, "demo: an ExitStatus exec reports an error");
+        ok(sessionDead && inp.disabled, "demo: the session dies and the input locks");
+        ok(errs2.length === 1 && errs2[0].includes("ran out of memory") && errs2[0].includes("reset session"),
+           "demo: the OOM message says what happened and how to recover");
+        ok(fns.exec("print(2);") === 1 && execCalls === 1, "demo: a dead session never reaches the interpreter");
+        fns.runProgram("reset");
+        ok(bootCalls === 1 && !sessionDead && !inp.disabled, "demo: reset session boots a fresh VM and unlocks");
+        ok(fns.exec("print(3);") === 1 && execCalls === 2, "demo: the revived session reaches the interpreter again");
+    }
 
     process.exit(fails);
 });

@@ -15,8 +15,12 @@ build/fable: $(SRCS) | build
 build/test-unit: tests/unit/test-unit.c $(CORE) | build
 	$(CC) $(CFLAGS) $(EXTRA) tests/unit/test-unit.c $(CORE) -o $@ -lm
 
-test: all
+build/test-streams-fallback: tests/test-streams-fallback.c wasm/wrapper.c $(SRCS) | build
+	$(CC) $(CFLAGS) $(EXTRA) -Itests/wasm-stub tests/test-streams-fallback.c $(CORE) -o $@ -lm
+
+test: all build/test-streams-fallback
 	./build/test-unit
+	./build/test-streams-fallback
 	./tests/run-tests.sh
 	./tests/check-docs.sh
 
