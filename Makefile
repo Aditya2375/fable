@@ -21,7 +21,7 @@ test: all
 	./tests/check-docs.sh
 
 sanitize: clean
-	$(MAKE) EXTRA="-fsanitize=address,undefined,float-cast-overflow -fno-omit-frame-pointer" test
+	UBSAN_OPTIONS=halt_on_error=1 $(MAKE) EXTRA="-fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all -fno-omit-frame-pointer" test
 
 stress: clean
 	$(MAKE) EXTRA="-DFABLE_GC_STRESS" test

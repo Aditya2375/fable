@@ -110,7 +110,7 @@ FableModule({ print, printErr }).then(m => {
 });
 inp.addEventListener('keydown', e => {
   if (e.key === 'Enter' && inp.value.trim()) {
-    runLine(inp.value.trim());
+    runLine(inp.value);
     inp.value = '';
   }
 });

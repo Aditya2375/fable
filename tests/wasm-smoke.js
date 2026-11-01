@@ -114,5 +114,24 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
     r = run("print(2 + 2);");
     ok(r.rc === 0 && r.out.includes("4"), "wasm: fresh VM works after reset");
 
+    /* round-10 F2: the demo page must pass the input line to fable_exec
+     * untrimmed (a trailing space inside a string continued across lines is
+     * source), keeping only the empty-line check. Extract the real handler
+     * and runLine from docs/index.html and drive them with stubs. */
+    const html = require("fs").readFileSync(require("path").join(__dirname, "..", "docs", "index.html"), "utf8");
+    const rl = html.match(/function runLine\(line\)\{[^}]*\}/)[0];
+    const key = html.match(/if \(e\.key === 'Enter'[^}]*\}/)[0];
+    let sent = null;
+    const printCmd = () => {};
+    const exec = src => { sent = src; };
+    const inp = { value: 'let s = "abc ' };   // trailing space inside an open string
+    const e = { key: "Enter" };
+    eval(rl + ";" + key);
+    ok(sent === 'let s = "abc ', "demo: Enter sends the line untrimmed");
+    inp.value = "   ";
+    sent = null;
+    eval(key);
+    ok(sent === null, "demo: whitespace-only line stays a no-op");
+
     process.exit(fails);
 });

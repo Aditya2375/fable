@@ -24,8 +24,8 @@ jobs:
       - name: unit suite under GC stress + sanitizers
         run: |
           make clean
-          make EXTRA="-DFABLE_GC_STRESS -fsanitize=address,undefined,float-cast-overflow -fno-omit-frame-pointer" build/test-unit
-          ./build/test-unit
+          make EXTRA="-DFABLE_GC_STRESS -fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all -fno-omit-frame-pointer" build/test-unit
+          UBSAN_OPTIONS=halt_on_error=1 ./build/test-unit
   fuzz:
     runs-on: ubuntu-latest
     steps:
@@ -39,8 +39,8 @@ jobs:
       - name: byte fuzz under sanitizers
         run: |
           make clean
-          make EXTRA="-fsanitize=address,undefined,float-cast-overflow -fno-omit-frame-pointer"
-          python3 tests/fuzz.py --programs 50 --blobs 300
+          make EXTRA="-fsanitize=address,undefined,float-cast-overflow -fno-sanitize-recover=all -fno-omit-frame-pointer"
+          UBSAN_OPTIONS=halt_on_error=1 python3 tests/fuzz.py --programs 50 --blobs 300
   wasm:
     runs-on: ubuntu-latest
     steps:

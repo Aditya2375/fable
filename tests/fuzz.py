@@ -140,7 +140,7 @@ def main():
             open(pf, "w").write(py_src)
             frc, fout, ferr = run([args.bin, ff])
             prc, pout, perr = run([sys.executable, pf])
-            if frc != 0:
+            if frc != 0 or "Sanitizer" in ferr or "runtime error:" in ferr:
                 print(f"FAIL program {i}: fable exit {frc}\n{ferr}\n---\n{fable_src}")
                 fails += 1
                 continue
@@ -183,7 +183,10 @@ def main():
             if p.returncode < 0 or p.returncode > 100:
                 print(f"FAIL blob {i}: crashed/sanitized with exit {p.returncode}\n{p.stderr.decode(errors='replace')[:400]}\nblob: {blob!r}")
                 fails += 1
-            elif b"Sanitizer" in p.stderr or b"runtime error:" in p.stderr.lower() and b"UBSan" in p.stderr:
+            elif b"Sanitizer" in p.stderr or b"runtime error:" in p.stderr:
+                # a bare "runtime error:" line is UBSan's report shape; the
+                # sanitizer builds halt on it, and it must fail here even in
+                # a recover-mode build (round-10 F1)
                 print(f"FAIL blob {i}: sanitizer report\n{p.stderr.decode(errors='replace')[:400]}\nblob: {blob!r}")
                 fails += 1
 
