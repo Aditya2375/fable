@@ -32,7 +32,9 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
     ok(r.out.includes("3"), "wasm: expression echoes in session mode");
 
     /* L1 regression: a trailing-newline EOF error reports the content line,
-     * matching the terminal REPL */
+     * matching the terminal REPL. Fresh session: error lines are absolute
+     * (round-16 F1), so boot to make the expected number deterministic. */
+    boot();
     r = run("1 + 1");
     ok(r.rc === 1 && r.err.includes("<web>:1: at end"), "wasm: EOF error reports the content line");
 
@@ -83,6 +85,7 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
     r = run("let xs = []; for (let i = 0; i < 5; i = i + 1) { push(xs, i * i); } print(xs);");
     ok(r.rc === 0 && r.out.includes("[0, 1, 4, 9, 16]"), "wasm: lists and loops");
 
+    boot();
     r = run("let x = ;");
     ok(r.rc !== 0 && r.err.includes("<web>:1:"), "wasm: compile error names the source and line");
     r = run("print(1 + 1);");
@@ -140,37 +143,68 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
     r = run("print(lost);");
     ok(r.rc !== 0 && r.err.includes("undefined variable"),
        "wasm: nothing from a NUL-tainted line gets defined");
+    boot();
     r = run("fn nulholder() {");
     ok(r.rc === 2, "wasm: open fn leaves input pending");
     r = run("  return 1;");
     ok(r.rc === 2, "wasm: still pending after a body line");
     r = run("\0");
     ok(r.rc !== 0 && r.err.includes("<web>:3") && r.err.includes("NUL byte"),
-       "wasm: NUL mid-pending names the absolute line");
+       "wasm: NUL mid-pending names the absolute session line");
     r = run("}");
     ok(r.rc !== 0, "wasm: the NUL line drops the pending input, like the CLI");
     r = run("print(nulholder);");
     ok(r.rc !== 0 && r.err.includes("undefined variable"),
        "wasm: nothing from the dropped pending input survives");
 
+    /* round-16 F1: compile errors name the absolute session line, exactly
+     * like the terminal REPL (the critic repro: CLI <repl>:3) */
+    boot();
+    run("print(111);");
+    run("let y = [");
+    r = run("nope];");
+    ok(r.rc === 1 && r.err.includes("<web>:3:"),
+       "wasm: compile error inside a pending statement names the absolute session line");
+
+    /* round-16 F3: accumulated input over 64 KB is rejected like the CLI,
+     * dropping the pending statement */
+    boot();
+    r = run("fn capped() {");
+    ok(r.rc === 2, "wasm: open fn pending for the cap test");
+    r = run("  let pad = \"" + "x".repeat(70000) + "\";");
+    ok(r.rc === 1 && r.err.includes("input too long"),
+       "wasm: over-64KB accumulated input rejected like the CLI");
+    r = run("}");
+    ok(r.rc !== 0, "wasm: the oversized line drops the pending input, like the CLI");
+    r = run("print(1 + 1);");
+    ok(r.rc === 0 && r.out.includes("2"), "wasm: session survives an over-64KB rejection");
+
     /* round-10 F2: the demo page must pass the input line to fable_exec
      * untrimmed (a trailing space inside a string continued across lines is
      * source), keeping only the empty-line check. Extract the real handler
      * and runLine from docs/index.html and drive them with stubs. */
     const html = require("fs").readFileSync(require("path").join(__dirname, "..", "docs", "index.html"), "utf8");
-    const rl = html.match(/function runLine\(line\)\{[^}]*\}/)[0];
-    const key = html.match(/if \(e\.key === 'Enter'[^}]*\}/)[0];
+    /* Extract a snippet or fail loudly - a silent [0] on null hides a rename */
+    const grab = (re, what) => {
+        const hit = html.match(re);
+        if (!hit) console.log("FAIL: wasm-smoke could not find " + what + " in docs/index.html"), fails = 1;
+        return hit && hit[0];
+    };
+    const rl = grab(/function runLine\(line\)\{[^}]*\}/, "runLine()");
+    const key = grab(/if \(e\.key === 'Enter'[^}]*\}/, "the Enter key handler");
     let sent = null;
     const printCmd = () => {};
     const exec = src => { sent = src; };
     const inp = { value: 'let s = "abc ' };   // trailing space inside an open string
     const e = { key: "Enter" };
-    eval(rl + ";" + key);
-    ok(sent === 'let s = "abc ', "demo: Enter sends the line untrimmed");
-    inp.value = "   ";
-    sent = null;
-    eval(key);
-    ok(sent === null, "demo: whitespace-only line stays a no-op");
+    if (rl && key) {
+        eval(rl + ";" + key);
+        ok(sent === 'let s = "abc ', "demo: Enter sends the line untrimmed");
+        inp.value = "   ";
+        sent = null;
+        eval(key);
+        ok(sent === null, "demo: whitespace-only line stays a no-op");
+    }
 
     /* round-14: buttons start disabled until boot enables them, and the
      * js/wasm cache-busters match each other and the wasm content hash */
@@ -185,22 +219,36 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
         .digest("hex").slice(0, 12);
     ok(vjs && vjs === vw && vjs === wasmHash, "demo: cache-busters match the wasm hash");
 
-    /* round-15 F2: a failed boot must surface an error instead of sitting
-     * on "loading wasm..." forever */
-    ok(html.includes(".catch("), "demo: a failed boot surfaces an error");
+    /* round-16 F2/F4: a rejecting FableModule lands in bootFailed, which
+     * writes the reason into the output; the controls are only ever enabled
+     * in the success path, so a failure leaves them disabled */
+    ok(html.includes(".catch(bootFailed)"), "demo: boot rejection is wired to bootFailed");
+    const bootSrc = grab(/function bootFailed\(e\)\{[\s\S]*?\n\}/, "bootFailed()");
+    if (bootSrc) {
+        const errs = [];
+        const printErr = t => { errs.push(t); };
+        const out = { textContent: "loading wasm..." };
+        eval("var bootFailedPage = " + bootSrc);
+        bootFailedPage(new Error("fetch 404"));
+        ok(out.textContent === "" && errs.length === 2 && errs[0].includes("could not start") && errs[0].includes("fetch 404"),
+           "demo: a failed boot writes the reason into the output");
+    }
 
-    /* round-15 F1/F3: the page-side NUL belt counts pending lines like the
-     * C side and drops them like the CLI. Extract the real exec() and drive
-     * its NUL path with stubs. */
-    const execSrc = html.match(/function exec\(src\)\{[\s\S]*?\n\}/)[0];
-    let perr = null, discarded = 0;
-    const printErr = t => { perr = t; };
-    let pendingLines = 2;   // as if two lines of a statement are pending
-    const M = { ccall: name => { if (name === 'fable_discard_pending') discarded++; return 0; } };
-    eval("var execPage = " + execSrc);   // expression: no clash with the round-10 exec stub
-    execPage("let x = \0;");
-    ok(perr && perr.includes("<web>:3") && discarded === 1 && pendingLines === 0,
-       "demo: page-side NUL error counts and drops pending lines");
+    /* round-15 F1 / round-16 F1: the page-side NUL belt names the same
+     * absolute session line the C side computes and drops the pending input
+     * like the CLI. Extract the real exec() and drive its NUL path with
+     * stubs: session lines 1-2 are the pending statement, this is line 3. */
+    const execSrc = grab(/function exec\(src\)\{[\s\S]*?\n\}/, "exec()");
+    if (execSrc) {
+        let perr = null, discarded = 0;
+        const printErr = t => { perr = t; };
+        let sessionLines = 2, pendingStart = 1, pendingLines = 2;
+        const M = { ccall: name => { if (name === 'fable_discard_pending') discarded++; return 0; } };
+        eval("var execPage = " + execSrc);   // expression: no clash with the round-10 exec stub
+        execPage("let x = \0;");
+        ok(perr && perr.includes("<web>:3") && discarded === 1 && pendingLines === 0 && sessionLines === 3,
+           "demo: page-side NUL error matches the C-side absolute line and drops pending");
+    }
 
     process.exit(fails);
 });

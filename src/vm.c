@@ -2,6 +2,7 @@
 #include "compiler.h"
 
 #include <stdlib.h>
+#include <limits.h>
 #include <string.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -153,7 +154,7 @@ static Value n_pop(int argc, Value *argv, bool *err, char *eb, int ec) {
     return l->items.items[--l->items.count];
 }
 static Value n_str(int argc, Value *argv, bool *err, char *eb, int ec) {
-    (void)argc; (void)err; (void)eb; (void)ec;
+    (void)argc;
     if (IS_NUM(argv[0])) return OBJ_VAL(string_of_double(AS_NUM(argv[0])));
     if (IS_BOOL(argv[0])) return OBJ_VAL(string_copy(AS_BOOL(argv[0]) ? "true" : "false", AS_BOOL(argv[0]) ? 4 : 5));
     if (IS_NIL(argv[0])) return OBJ_VAL(string_copy("nil", 3));
@@ -164,6 +165,14 @@ static Value n_str(int argc, Value *argv, bool *err, char *eb, int ec) {
     FILE *mem = open_memstream(&buf, &cap);
     value_print(mem, argv[0]);   /* argv stays rooted on the VM stack */
     fclose(mem);
+    /* a rendered value past the string cap (or, theoretically, INT_MAX)
+     * must not reach string_copy's int length */
+    if (cap > (size_t)INT_MAX || cap > vm.string_max) {
+        free(buf);
+        *err = true;
+        snprintf(eb, (size_t)ec, "string too long: str() rendering is over the %zu-byte limit", vm.string_max);
+        return NIL_VAL;
+    }
     ObjString *r = string_copy(buf, (int)cap);
     free(buf);
     return OBJ_VAL(r);

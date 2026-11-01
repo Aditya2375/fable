@@ -46,6 +46,7 @@ src/main.c|char pending[65536]|64 KB
 src/main.c|pending_start|absolute input line
 Makefile|std=gnu11|POSIX.1-2008 getline and open_memstream
 wasm/wrapper.c|fable_exec_len|fable_exec_len
+wasm/wrapper.c|interpret_at(pending, \"<web>\", pending_start)|numbers lines the same way
 src/obj.h|FABLE_STRING_MAX|256 MB
 "
 # Phrases from removed limits must never come back (round-7 getline REPL:
@@ -68,5 +69,26 @@ printf '%s' "$pins" | while IFS='|' read -r file src_pat doc_pat; do
         echo "check-docs: README does not document: $doc_pat"; exit 1
     fi
 done || fail=1
+
+# round-16 F2: the README quick-start commands must run as printed - a
+# snippet that does not parse is a broken first run. The ./build/fable lines
+# run verbatim in a temp dir with fixture files standing in for the named
+# scripts; the make lines are exercised by the build itself before this
+# script runs.
+qdir=$(mktemp -d)
+trap 'rm -rf "$qdir"' EXIT
+ln -s "$PWD/build" "$qdir/build"
+printf 'print(1);\n' > "$qdir/script.fable"
+printf 'print(2);\n' > "$qdir/x.fable"
+sed -n '/^## Quick start/,/^## /p' README.md \
+  | sed -n '/^```sh/,/^```$/p' | grep -v '^```' \
+  | sed 's/[[:space:]]*#.*$//' | grep -v '^[[:space:]]*$' \
+  | while IFS= read -r cmd; do
+      case "$cmd" in make*) continue ;; esac
+      if ! (cd "$qdir" && eval "$cmd" </dev/null >/dev/null 2>&1); then
+          echo "check-docs: quick-start command fails: $cmd"; exit 1
+      fi
+    done || fail=1
+
 [ "$fail" -eq 0 ] && echo "check-docs: ok"
 exit $fail

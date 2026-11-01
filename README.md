@@ -4,7 +4,7 @@ fable is a small, complete programming language: a tree-walk-free, bytecode
 interpreter written in C11 plus the POSIX.1-2008 getline and open_memstream functions (the Makefile builds with -std=gnu11), with no dependencies beyond libc and libm. It has
 lexically scoped variables, first-class functions, closures with shared
 upvalues, lists, strings, and a mark-sweep garbage collector. The interpreter core is
-3019 lines of C.
+3028 lines of C.
 
 Try it in your browser: **https://aditya2375.github.io/fable/** - the same C
 compiled to WebAssembly, running entirely on your machine.
@@ -16,7 +16,7 @@ make            # builds build/fable and build/test-unit
 make test       # unit suite + golden cases + docs check
 ./build/fable                  # REPL (multi-line input continues with a "... " prompt)
 ./build/fable script.fable     # run a file
-./build/fable -c 'print(1+2)'  # run a snippet
+./build/fable -c 'print(1+2);'  # run a snippet
 ./build/fable -disasm x.fable  # dump the compiled bytecode, then run
 ```
 
@@ -132,7 +132,8 @@ NUL byte anywhere in the input (`NUL byte in source`, nonzero exit) - input
 lines are length-aware, capped only with the accumulated input at 64 KB.
 In the browser
 demo, clicking an example while a line is half-typed discards the partial
-line (and says so) instead of wedging the session.
+line (and says so) instead of wedging the session, and accumulated input is
+capped at the same 64 KB (`input too long`).
 
 ## Errors
 
@@ -144,8 +145,8 @@ In the REPL a compile or runtime error prints and the session continues, so the
 exit status stays 0; only input that ends with a bracket, string or comment
 still open, a NUL byte in the input, or accumulated multi-line input
 over 64 KB exits nonzero. REPL errors name the absolute input line, even when
-the failing text sits inside a multi-line statement; the browser demo numbers
-lines the same way.
+the failing text sits inside a multi-line statement; the browser demo
+numbers lines the same way.
 Statements before the failing one in the same input still commit: globals
 they defined stay defined, their prints already happened; the failing
 statement commits nothing (a `let` that fails leaves the name undefined) -
@@ -238,7 +239,7 @@ byte counter tracks live bytes exactly, so long sessions don't ratchet); `make s
 ## Testing
 
 - `make test` runs everything:
-  - a C unit suite (`tests/unit/test-unit.c`) with **884 checks** covering
+  - a C unit suite (`tests/unit/test-unit.c`) with **886 checks** covering
     the lexer, values, hash table, bytecode chunks, and end-to-end programs
     (closures, recursion, shared upvalues, lists, error paths, IEEE edge
     cases, GC-safety patterns, and every resource limit above);

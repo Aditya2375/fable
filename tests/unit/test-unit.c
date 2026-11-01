@@ -951,6 +951,13 @@ static void critic_r5(void) {
     out = run_capture("print(\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" + \"bbbbbbbbbbbbbbbbbbbbbbbb\");", &r);
     OK(r == INTERPRET_OK);   /* exactly at the cap is allowed */
     free(out);
+    /* round-16 F5: str() refuses a value whose rendering exceeds the string
+     * cap instead of wrapping the open_memstream length into an int */
+    out = run_capture("let big = []; for (let i = 0; i < 40; i = i + 1) { push(big, i); } str(big);", &r);
+    OK(r == INTERPRET_RUNTIME_ERROR);
+    OK(strstr(vm.errbuf, "string too long") != NULL);
+    vm.had_runtime_error = false;
+    free(out);
     vm.string_max = saved_cap;
     out = run_capture("print(\"ok\" + \"!\");", &r);
     OK(r == INTERPRET_OK && !strcmp(out, "ok!\n"));

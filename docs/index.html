@@ -48,16 +48,18 @@
   their value, like the terminal REPL; a line that leaves a bracket open
   continues on the next line ("...").</p>
 </main>
-<script src="fable.js?v=e4d063f807e4"></script>
+<script src="fable.js?v=52ea04e45e0a"></script>
 <script>
 const out = document.getElementById('out');
 const inp = document.getElementById('in');
 let M = null;
 let errNext = false;
-/* lines of the multi-line statement waiting in the wrapper's pending
-   buffer, so the page-side NUL error can name the absolute line like the
-   wasm side and the terminal REPL do */
-let pendingLines = 0;
+/* mirror the wrapper's session line numbering (the same absolute lines the
+   terminal REPL reports): sessionLines counts every line sent this session,
+   pendingStart is the session line where the half-typed statement began and
+   pendingLines how many lines of it are waiting, so the page-side NUL belt
+   names the same line the wasm side would */
+let sessionLines = 0, pendingStart = 1, pendingLines = 0;
 /* emscripten calls print once per output line WITHOUT the trailing newline,
    so each call appends one full line. */
 function print(t){
@@ -74,12 +76,14 @@ function exec(src){
   /* belt: the wasm boundary rejects NUL with the same error; a JS string
      can carry one, and a C string cannot */
   const nul = src.indexOf('\0');
+  const lineCount = src.split('\n').length;
   if (nul >= 0) {
-    /* count pending lines like the wasm side, and drop them like the CLI:
-       a NUL-tainted line corrupts any half-typed input */
-    const line = pendingLines + src.slice(0, nul).split('\n').length;
+    /* the same absolute line the wasm side computes, then drop the pending
+       input like the CLI: a NUL-tainted line corrupts any half-typed input */
+    const line = pendingStart + pendingLines + src.slice(0, nul).split('\n').length - 1;
     printErr('fable: <web>:' + line + ': NUL byte in input (source must be text)');
     M.ccall('fable_discard_pending', 'number', [], []);
+    sessionLines += lineCount;
     pendingLines = 0;
     return 1;
   }
@@ -89,11 +93,13 @@ function exec(src){
   const ptr = M._malloc(Math.max(bytes.length, 1));
   if (!ptr) { printErr('fable: out of memory sending input to the interpreter'); return 1; }
   M.writeArrayToMemory(bytes, ptr);
+  if (pendingLines === 0) pendingStart = sessionLines + 1;
   const rc = M.ccall('fable_exec_len', 'number', ['number', 'number'], [ptr, bytes.length]);
   M._free(ptr);
   /* mirror the wrapper's pending buffer: rc 2 means the statement is still
      incomplete and stays pending; anything else cleared it */
-  pendingLines = rc === 2 ? pendingLines + src.split('\n').length : 0;
+  sessionLines += lineCount;
+  pendingLines = rc === 2 ? pendingLines + lineCount : 0;
   return rc;
 }
 function setEcho(on){
@@ -113,7 +119,7 @@ const programs = {
 function runProgram(name){
   if (name === 'reset') {
     M.ccall('fable_boot', null, [], []);
-    pendingLines = 0;
+    sessionLines = 0; pendingStart = 1; pendingLines = 0;
     printCmd('fable> <session reset>');
     return;
   }
@@ -132,7 +138,7 @@ function runProgram(name){
 /* the wasm fetch carries the same content-hash buster as the js tag, so a
    returning browser can never pair fresh glue with a stale cached wasm
    (round-14 F1); wasm/build.sh stamps both on every rebuild */
-FableModule({ print, printErr, locateFile: (path) => path + '?v=e4d063f807e4' }).then(m => {
+FableModule({ print, printErr, locateFile: (path) => path + '?v=52ea04e45e0a' }).then(m => {
   M = m;
   M.ccall('fable_boot', null, [], []);
   out.textContent = '';
@@ -140,13 +146,14 @@ FableModule({ print, printErr, locateFile: (path) => path + '?v=e4d063f807e4' })
   inp.disabled = false;
   document.querySelectorAll('button').forEach(b => { b.disabled = false; });
   inp.focus();
-}).catch(e => {
+}).catch(bootFailed);
+function bootFailed(e){
   /* a failed fetch or boot must not sit on "loading wasm..." forever: say
      what happened and leave the input and buttons disabled */
   out.textContent = '';
   printErr('fable: could not start the interpreter (' + (e && e.message ? e.message : e) + ')');
   printErr('reload the page to try again');
-});
+}
 inp.addEventListener('keydown', e => {
   if (e.key === 'Enter' && inp.value.trim()) {
     runLine(inp.value);

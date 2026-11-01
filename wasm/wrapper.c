@@ -8,11 +8,21 @@
 
 static void pending_clear(void);
 
+/* Session line numbering, matching the terminal REPL: web_lines counts every
+ * input line received this session (accepted or dropped), and pending_start
+ * is the 1-based session line where the current pending statement began, so
+ * every error - compile, runtime or NUL - names the absolute session line
+ * like the CLI's interpret_at(pending, "<repl>", pending_start). */
+static int web_lines = 0;
+static int pending_start = 1;
+
 EMSCRIPTEN_KEEPALIVE
 int fable_boot(void) {
     static int booted = 0;
     if (booted) vm_free();
     pending_clear();
+    web_lines = 0;
+    pending_start = 1;
     booted = 1;
     vm_init(stdout, stderr);
     vm.repl = true;   /* expression statements echo, like the terminal REPL */
@@ -49,20 +59,30 @@ EMSCRIPTEN_KEEPALIVE
 int fable_exec_len(const char *src, int len) {
     /* The JS side marshals an explicit length: a NUL byte is a loud error,
      * never a silent truncation (round-13 F1 - the same bug class the CLI
-     * rejects in files and on stdin). The line count covers pending
-     * multi-line input, like the terminal REPL's absolute lines. */
+     * rejects in files and on stdin). */
+    int src_lines = 1;
+    for (int j = 0; j < len; j++) if (src[j] == '\n') src_lines++;
     for (int i = 0; i < len; i++) {
         if (src[i] == '\0') {
-            int line = 1;
+            int line = pending_start;
             for (size_t j = 0; j < pending_len; j++) if (pending[j] == '\n') line++;
             for (int j = 0; j < i; j++) if (src[j] == '\n') line++;
             fprintf(stderr, "fable: <web>:%d: NUL byte in input (source must be text)\n", line);
             fflush(stderr);
             pending_clear();   /* a dropped line corrupts any pending input, like the CLI */
+            web_lines += src_lines;   /* the dropped lines still consumed session lines */
             return 1;   /* nothing runs */
         }
     }
     size_t n = (size_t)len;
+    if (pending_len + n + 1 >= 65536) {
+        /* the same 64 KB cap on accumulated input as the terminal REPL */
+        fprintf(stderr, "fable: <web>: input too long\n");
+        fflush(stderr);
+        pending_clear();
+        web_lines += src_lines;
+        return 1;
+    }
     if (pending_len + n + 2 > pending_cap) {
         size_t new_cap = (pending_len + n + 2) * 2;
         char *np = realloc(pending, new_cap);   /* temp: a failed realloc must not leak the old buffer */
@@ -75,16 +95,18 @@ int fable_exec_len(const char *src, int len) {
         pending = np;
         pending_cap = new_cap;
     }
+    if (pending_len == 0) pending_start = web_lines + 1;
     memcpy(pending + pending_len, src, n);
     pending_len += n;
     pending[pending_len++] = '\n';
     pending[pending_len] = '\0';
+    web_lines += src_lines;
     if (!fable_source_complete(pending)) {
         printf("...\n");
         fflush(stdout);
         return 2;   /* incomplete: waiting for more lines */
     }
-    InterpretResult r = interpret(pending, "<web>");
+    InterpretResult r = interpret_at(pending, "<web>", pending_start);
     vm.had_runtime_error = false;   /* one bad line must not kill the session */
     pending_clear();
     fflush(stdout);
