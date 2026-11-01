@@ -634,7 +634,12 @@ rt_fail:
                 vm.errbuf);
         print_trace();
     }
-    /* unwind: scripts exit nonzero; the REPL keeps going with a clean stack */
+    /* unwind: scripts exit nonzero; the REPL keeps going with a clean stack.
+     * Close every open upvalue first: they point into the stack being
+     * abandoned, and a closure that escaped to a global would otherwise read
+     * dead slots (or keep a swept heap object dangling) after the reset
+     * (round-12 HIGH-1). */
+    close_upvalues(vm.stack);
     vm.frame_count = 0;
     vm.top = vm.stack;
     return INTERPRET_RUNTIME_ERROR;

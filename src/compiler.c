@@ -92,6 +92,16 @@ static void consume(TokenType t, const char *fmt, ...) {
     error_at(&P.cur, "%s", msg);
 }
 
+/* Capacity limits (constants, locals, upvalues, parameters, arguments,
+ * jumps) report once, then stop the parse like a depth guard: the
+ * alternative is one identical error per remaining statement (round-12
+ * LOW-3: 33232 identical "too many constants" lines for 66000 lets). */
+static void cap_error(Token *t, const char *msg) {
+    if (P.depth_failed) return;
+    P.depth_failed = true;
+    error_at(t, "%s", msg);
+}
+
 /* ---- emit ---- */
 static Chunk *chunk(void) { return &P.compiler->fn->chunk; }
 static int emit(uint8_t b) { return chunk_write(chunk(), b, P.prev.line); }
@@ -109,19 +119,19 @@ static int emit_jump(uint8_t op) {
 }
 static void patch_jump(int at) {
     int j = chunk()->count - at - 2;
-    if (j > UINT16_MAX) error_at(&P.prev, "jump too far");
+    if (j > UINT16_MAX) cap_error(&P.prev, "jump too far");
     chunk_patch16(chunk(), at, (uint16_t)j);
 }
 static void emit_loop(int to) {
     emit(OP_LOOP);
     int back = chunk()->count - to + 2;
-    if (back > UINT16_MAX) error_at(&P.prev, "loop body too large");
+    if (back > UINT16_MAX) cap_error(&P.prev, "loop body too large");
     emit((uint8_t)(back >> 8));
     emit((uint8_t)(back & 0xff));
 }
 static uint16_t make_constant(Value v) {
     int i = chunk_add_constant(chunk(), v);
-    if (i > UINT16_MAX) { error_at(&P.prev, "too many constants in one chunk"); return 0; }
+    if (i > UINT16_MAX) { cap_error(&P.prev, "too many constants in one chunk"); return 0; }
     return (uint16_t)i;
 }
 static uint16_t ident_constant(Token *name) {
@@ -210,7 +220,7 @@ static int add_upvalue(Compiler *c, uint8_t index, bool is_local) {
         if (c->upvalues[i].index == index && c->upvalues[i].is_local == is_local)
             return i;
     if (n == MAX_UPVALUES) {
-        error_at(&P.prev, "too many captured variables in one function");
+        cap_error(&P.prev, "too many captured variables in one function");
         return 0;
     }
     c->upvalues[n].index = index;
@@ -240,7 +250,7 @@ static void declare_local(Token *name) {
             error_at(name, "a variable with this name already exists in this scope");
     }
     if (c->local_count == MAX_LOCALS) {
-        error_at(name, "too many local variables in one function");
+        cap_error(name, "too many local variables in one function");
         return;
     }
     Local *l = &c->locals[c->local_count++];
@@ -445,7 +455,7 @@ static void call(bool can_assign) {
     if (!check(T_RPAREN)) {
         do {
             expression();
-            if (argc == 255) error_at(&P.prev, "at most 255 arguments");
+            if (argc == 255) cap_error(&P.prev, "at most 255 arguments");
             argc++;
         } while (match(T_COMMA));
     }
@@ -503,7 +513,7 @@ static void function_body(FnKind kind, Token name_tok) {
         do {
             P.compiler->fn->arity++;
             if (P.compiler->fn->arity > 255)
-                error_at(&P.prev, "at most 255 parameters");
+                cap_error(&P.prev, "at most 255 parameters");
             consume(T_IDENT, "expected a parameter name");
             declare_local(&P.prev);
             define_local();

@@ -36,6 +36,13 @@ static char *run_capture(const char *src, InterpretResult *res) {
     return buf;
 }
 
+static int count_substr(const char *hay, const char *needle) {
+    int n = 0;
+    size_t l = strlen(needle);
+    while ((hay = strstr(hay, needle))) { n++; hay += l; }
+    return n;
+}
+
 static void lexer_basics(void) {
     Lexer lx;
     lexer_init(&lx, "let x = 42; # note\nfn", 1);
@@ -1125,14 +1132,14 @@ static void critic_r6(void) {
         for (int i = 0; i < 7000; i++) w += sprintf(w, "i = i + 1; ");
         w += sprintf(w, "}");
         out = run_capture(src, &r);
-        OK(r == INTERPRET_COMPILE_ERROR && strstr(last_err, "loop body too large") != NULL);
+        OK(r == INTERPRET_COMPILE_ERROR && count_substr(last_err, "loop body too large") == 1);
         free(out);
         w = src;
         w += sprintf(w, "let i = 0; if (1) { ");
         for (int i = 0; i < 7000; i++) w += sprintf(w, "i = i + 1; ");
         w += sprintf(w, "}");
         out = run_capture(src, &r);
-        OK(r == INTERPRET_COMPILE_ERROR && strstr(last_err, "jump too far") != NULL);
+        OK(r == INTERPRET_COMPILE_ERROR && count_substr(last_err, "jump too far") == 1);
         free(out); free(src);
     }
     out = run_capture("print(\"alive\");", &r);   /* VM healthy after all of it */
@@ -1215,6 +1222,114 @@ static void critic_r9(void) {
     free(out);
 }
 
+static void critic_r12(void) {
+    InterpretResult r;
+    char *out;
+    /* HIGH-1: a runtime error used to unwind the stack without closing open
+     * upvalues; a closure that escaped to a global then read dead stack
+     * slots. Session mode (REPL/wasm), the critic's repro A: the surviving
+     * getter must still return 42 after outer() dies on nil + 1. */
+    vm.repl = true;
+    out = run_capture("let g = nil;", &r);
+    OK(r == INTERPRET_OK); free(out);
+    out = run_capture("fn outer() { let x = 42; fn getter() { return x; } g = getter; nil + 1; }", &r);
+    OK(r == INTERPRET_OK); free(out);
+    out = run_capture("outer();", &r);
+    OK(r == INTERPRET_RUNTIME_ERROR); free(out);
+    out = run_capture("print(g());", &r);
+    OK(r == INTERPRET_OK && !strcmp(out, "42\n"));
+    free(out);
+    /* repro B: the captured slot holds a heap list; after the error and a
+     * pile of fresh allocations the closed upvalue must still point at it
+     * (pre-fix it was swept: ASan heap-use-after-free in gc_mark_obj under
+     * GC_STRESS). */
+    out = run_capture("let h = nil;", &r);
+    OK(r == INTERPRET_OK); free(out);
+    out = run_capture("fn outer2() { let x = [1, 2, 3]; fn get0() { return x[0]; } h = get0; nil + 1; }", &r);
+    OK(r == INTERPRET_OK); free(out);
+    out = run_capture("outer2();", &r);
+    OK(r == INTERPRET_RUNTIME_ERROR); free(out);
+    out = run_capture("let junk = []; for (let i = 0; i < 50; i = i + 1) { push(junk, \"s\" + str(i)); }", &r);
+    OK(r == INTERPRET_OK); free(out);
+    out = run_capture("print(h());", &r);
+    OK(r == INTERPRET_OK && !strcmp(out, "1\n"));
+    free(out);
+    /* same unwind with the error three frames deep */
+    out = run_capture("let k = nil;", &r);
+    OK(r == INTERPRET_OK); free(out);
+    out = run_capture("fn boom() { nil + 1; } fn mid() { boom(); } fn top() { let x = 7; fn get() { return x; } k = get; mid(); }", &r);
+    OK(r == INTERPRET_OK); free(out);
+    out = run_capture("top();", &r);
+    OK(r == INTERPRET_RUNTIME_ERROR); free(out);
+    out = run_capture("print(k());", &r);
+    OK(r == INTERPRET_OK && !strcmp(out, "7\n"));
+    free(out);
+    vm.repl = false;
+    /* LOW-2: list + list concatenates without mutating either operand. */
+    out = run_capture("let a = [1]; let b = [2]; print(a + b); print(a); print(b);", &r);
+    OK(r == INTERPRET_OK && !strcmp(out, "[1, 2]\n[1]\n[2]\n"));
+    free(out);
+    /* LOW-3: every capacity limit reports once, then stops the parse. */
+    {
+        char *src = malloc(34000 * 22 + 64);
+        char *w = src;
+        for (int i = 0; i < 34000; i++) w += sprintf(w, "let v%d = %d; ", i, i);
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_COMPILE_ERROR && count_substr(last_err, "too many constants in one chunk") == 1);
+        free(out); free(src);
+    }
+    {
+        char *src = malloc(260 * 16 + 64);
+        char *w = src;
+        w += sprintf(w, "fn f() { ");
+        for (int i = 0; i < 260; i++) w += sprintf(w, "let x%d = %d; ", i, i);
+        w += sprintf(w, "}");
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_COMPILE_ERROR && count_substr(last_err, "too many local variables") == 1);
+        free(out); free(src);
+    }
+    {
+        char *src = malloc(260 * 8 + 64);
+        char *w = src;
+        w += sprintf(w, "fn f(");
+        for (int i = 0; i < 260; i++) w += sprintf(w, "%sp%d", i ? "," : "", i);
+        w += sprintf(w, ") { return 1; }");
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_COMPILE_ERROR && count_substr(last_err, "at most 255 parameters") == 1);
+        free(out); free(src);
+    }
+    {
+        char *src = malloc(300 * 4 + 64);
+        char *w = src;
+        w += sprintf(w, "fn f(a) { return a; }");
+        for (int c = 0; c < 2; c++) {
+            w += sprintf(w, " f(");
+            for (int i = 0; i < 300; i++) w += sprintf(w, "%s1", i ? "," : "");
+            w += sprintf(w, ");");
+        }
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_COMPILE_ERROR && count_substr(last_err, "at most 255 arguments") == 1);
+        free(out); free(src);
+    }
+    {
+        /* 253 outer locals captured through a middle fn (fn middle takes
+         * one outer slot itself), plus 4 middle locals: the 257th capture
+         * exceeds the 256-upvalue cap, and each later statement that names
+         * another over-cap variable must NOT re-report */
+        size_t cap = 253 * 20 + 260 * 12 + 512;
+        char *src = malloc(cap);
+        char *w = src;
+        w += sprintf(w, "fn outer() { ");
+        for (int i = 0; i < 253; i++) w += sprintf(w, "let o%d = %d; ", i, i);
+        w += sprintf(w, "fn middle() { let m0 = 0; let m1 = 1; let m2 = 2; let m3 = 3; fn inner() { let s = ");
+        for (int i = 0; i < 253; i++) w += sprintf(w, "%so%d", i ? " + " : "", i);
+        w += sprintf(w, " + m0; let t = m1; let u = m2; let v = m3; let w2 = m3; } } }");
+        out = run_capture(src, &r);
+        OK(r == INTERPRET_COMPILE_ERROR && count_substr(last_err, "too many captured variables") == 1);
+        free(out); free(src);
+    }
+}
+
 int main(void) {
     vm_init(stdout, stderr);
     lexer_basics();
@@ -1228,6 +1343,7 @@ int main(void) {
     critic_r2();
     critic_r1();
     critic_r9();
+    critic_r12();
     repl_echo();
     end_to_end();
     /* GC: allocate a pile of garbage, force a collection, keep working */

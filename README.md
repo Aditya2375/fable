@@ -4,7 +4,7 @@ fable is a small, complete programming language: a tree-walk-free, bytecode
 interpreter written in C11 plus the POSIX.1-2008 getline and open_memstream functions (the Makefile builds with -std=gnu11), with no dependencies beyond libc and libm. It has
 lexically scoped variables, first-class functions, closures with shared
 upvalues, lists, strings, and a mark-sweep garbage collector. The interpreter core is
-3000 lines of C.
+3015 lines of C.
 
 Try it in your browser: **https://aditya2375.github.io/fable/** - the same C
 compiled to WebAssembly, running entirely on your machine.
@@ -97,7 +97,7 @@ print(len(s));      # 5
 ### Operators
 
 Arithmetic `+ - * / %`, comparison `< <= > >=`, equality `== !=`, unary
-`-` and `not`. `+` adds numbers and concatenates strings. Division by zero
+`-` and `not`. `+` adds numbers, concatenates strings, and concatenates lists without mutating either operand (`[1] + [2]` is `[1, 2]`). Division by zero
 yields IEEE `inf` (matching `1.0/0.0` in C); `%` by zero is a runtime error.
 `==` compares numbers by value, strings by content, everything else by
 identity.
@@ -231,7 +231,7 @@ byte counter tracks live bytes exactly, so long sessions don't ratchet); `make s
 ## Testing
 
 - `make test` runs everything:
-  - a C unit suite (`tests/unit/test-unit.c`) with **862 checks** covering
+  - a C unit suite (`tests/unit/test-unit.c`) with **881 checks** covering
     the lexer, values, hash table, bytecode chunks, and end-to-end programs
     (closures, recursion, shared upvalues, lists, error paths, IEEE edge
     cases, GC-safety patterns, and every resource limit above);

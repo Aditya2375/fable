@@ -114,6 +114,16 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
     r = run("print(2 + 2);");
     ok(r.rc === 0 && r.out.includes("4"), "wasm: fresh VM works after reset");
 
+    /* round-12 HIGH-1: a runtime error closes open upvalues - a closure
+     * that escaped to a global keeps its captured value afterwards, and the
+     * session continues correctly */
+    run("let g = nil;");
+    run("fn outer() { let x = 42; fn getter() { return x; } g = getter; nil + 1; }");
+    r = run("outer();");
+    ok(r.rc !== 0, "wasm: runtime error propagates");
+    r = run("print(g());");
+    ok(r.out.includes("42"), "wasm: escaped closure keeps its local after an error unwind");
+
     /* round-10 F2: the demo page must pass the input line to fable_exec
      * untrimmed (a trailing space inside a string continued across lines is
      * source), keeping only the empty-line check. Extract the real handler
