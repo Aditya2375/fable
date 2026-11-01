@@ -1330,6 +1330,25 @@ static void critic_r12(void) {
     }
 }
 
+static void critic_r13(void) {
+    InterpretResult r;
+    char *out;
+    /* F2: statements before the failing one in the same input commit; the
+     * failing let leaves the name undefined; no atomicity. */
+    vm.repl = true;
+    /* (fresh names: the shared VM's globals from earlier tests persist) */
+    out = run_capture("let pre13 = 1; let gone13 = nil + 1;", &r);
+    OK(r == INTERPRET_RUNTIME_ERROR);
+    free(out);
+    out = run_capture("print(pre13);", &r);
+    OK(r == INTERPRET_OK && !strcmp(out, "1\n"));
+    free(out);
+    out = run_capture("print(gone13);", &r);
+    OK(r == INTERPRET_RUNTIME_ERROR && strstr(last_err, "undefined variable 'gone13'") != NULL);
+    free(out);
+    vm.repl = false;
+}
+
 int main(void) {
     vm_init(stdout, stderr);
     lexer_basics();
@@ -1344,6 +1363,7 @@ int main(void) {
     critic_r1();
     critic_r9();
     critic_r12();
+    critic_r13();
     repl_echo();
     end_to_end();
     /* GC: allocate a pile of garbage, force a collection, keep working */

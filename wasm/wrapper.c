@@ -46,8 +46,23 @@ int fable_discard_pending(void) {
 }
 
 EMSCRIPTEN_KEEPALIVE
-int fable_exec(const char *src) {
-    size_t n = strlen(src);
+int fable_exec_len(const char *src, int len) {
+    /* The JS side marshals an explicit length: a NUL byte is a loud error,
+     * never a silent truncation (round-13 F1 - the same bug class the CLI
+     * rejects in files and on stdin). The line count covers pending
+     * multi-line input, like the terminal REPL's absolute lines. */
+    for (int i = 0; i < len; i++) {
+        if (src[i] == '\0') {
+            int line = 1;
+            for (size_t j = 0; j < pending_len; j++) if (pending[j] == '\n') line++;
+            for (int j = 0; j < i; j++) if (src[j] == '\n') line++;
+            fprintf(stderr, "fable: <web>:%d: NUL byte in input (source must be text)\n", line);
+            fflush(stderr);
+            return 1;   /* nothing runs; pending input stays pending, like
+                           the terminal REPL dropping a NUL-tainted line */
+        }
+    }
+    size_t n = (size_t)len;
     if (pending_len + n + 2 > pending_cap) {
         size_t new_cap = (pending_len + n + 2) * 2;
         char *np = realloc(pending, new_cap);   /* temp: a failed realloc must not leak the old buffer */

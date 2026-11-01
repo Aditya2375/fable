@@ -12,9 +12,15 @@ function ok(cond, label) {
 }
 factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } }).then(m => {
     const boot = () => m.ccall("fable_boot", "number", [], []);
+    /* Marshal with an explicit length: ccall's "string" conversion would
+     * silently truncate at a NUL (round-13 F1). Mirrors the demo page. */
     const run = (src) => {
         out = ""; err = "";
-        const rc = m.ccall("fable_exec", "number", ["string"], [src]);
+        const bytes = new TextEncoder().encode(src);
+        const ptr = m._malloc(Math.max(bytes.length, 1));
+        m.writeArrayToMemory(bytes, ptr);
+        const rc = m.ccall("fable_exec_len", "number", ["number", "number"], [ptr, bytes.length]);
+        m._free(ptr);
         return { rc, out, err };
     };
     ok(boot() === 0, "wasm: boot");
@@ -123,6 +129,25 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
     ok(r.rc !== 0, "wasm: runtime error propagates");
     r = run("print(g());");
     ok(r.out.includes("42"), "wasm: escaped closure keeps its local after an error unwind");
+
+    /* round-13 F1: a NUL byte at the wasm boundary is a loud error, never
+     * a silent truncation - all three critic repros */
+    r = run("print(1);\0 @@@ garbage");
+    ok(r.rc !== 0 && r.out === "" && r.err.includes("NUL byte"),
+       "wasm: NUL after valid code rejects the whole input");
+    r = run("\0let lost = 1;");
+    ok(r.rc !== 0 && r.err.includes("NUL byte"), "wasm: leading NUL rejected");
+    r = run("print(lost);");
+    ok(r.rc !== 0 && r.err.includes("undefined variable"),
+       "wasm: nothing from a NUL-tainted line gets defined");
+    r = run("fn nulholder() {");
+    ok(r.rc === 2, "wasm: open fn leaves input pending");
+    r = run("\0");
+    ok(r.rc !== 0 && r.err.includes("NUL byte"), "wasm: NUL mid-pending rejected");
+    r = run("}");
+    ok(r.rc === 0, "wasm: pending survives a dropped NUL line");
+    r = run("print(nulholder);");
+    ok(r.out.includes("<fn nulholder>"), "wasm: the pended definition still completes");
 
     /* round-10 F2: the demo page must pass the input line to fable_exec
      * untrimmed (a trailing space inside a string continued across lines is

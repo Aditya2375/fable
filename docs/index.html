@@ -48,7 +48,7 @@
   their value, like the terminal REPL; a line that leaves a bracket open
   continues on the next line ("...").</p>
 </main>
-<script src="fable.js?v=4"></script>
+<script src="fable.js?v=5"></script>
 <script>
 const out = document.getElementById('out');
 const inp = document.getElementById('in');
@@ -67,7 +67,20 @@ function printCmd(t){
   out.appendChild(s); out.scrollTop = out.scrollHeight;
 }
 function exec(src){
-  M.ccall('fable_exec', null, ['string'], [src]);
+  /* belt: the wasm boundary rejects NUL with the same error; a JS string
+     can carry one, and a C string cannot */
+  if (src.indexOf('\0') >= 0) {
+    printErr('fable: <web>: NUL byte in input (source must be text)');
+    return 1;
+  }
+  /* marshal with an explicit length - ccall's 'string' conversion would
+     silently truncate at a NUL */
+  const bytes = new TextEncoder().encode(src);
+  const ptr = M._malloc(Math.max(bytes.length, 1));
+  M.writeArrayToMemory(bytes, ptr);
+  const rc = M.ccall('fable_exec_len', 'number', ['number', 'number'], [ptr, bytes.length]);
+  M._free(ptr);
+  return rc;
 }
 function setEcho(on){
   M.ccall('fable_set_echo', null, ['number'], [on ? 1 : 0]);

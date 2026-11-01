@@ -145,7 +145,13 @@ exit status stays 0; only input that ends with a bracket, string or comment
 still open, a NUL byte in the input, or accumulated multi-line input
 over 64 KB exits nonzero. REPL errors name the absolute input line, even when
 the failing text sits inside a multi-line statement (the browser demo numbers
-lines within the current statement). `fable script.fable -c "..."` is a usage error
+lines within the current statement).
+Statements before the failing one in the same input still commit: globals
+they defined stay defined, their prints already happened; the failing
+statement commits nothing (a `let` that fails leaves the name undefined) -
+there is no statement-level atomicity. The browser demo's wasm boundary
+rejects NUL bytes the same way the CLI does (the page marshals an explicit
+length, so input is never silently truncated). `fable script.fable -c "..."` is a usage error
 (exit 2): give a script or `-c`, not both.
 
 ```
@@ -231,7 +237,7 @@ byte counter tracks live bytes exactly, so long sessions don't ratchet); `make s
 ## Testing
 
 - `make test` runs everything:
-  - a C unit suite (`tests/unit/test-unit.c`) with **881 checks** covering
+  - a C unit suite (`tests/unit/test-unit.c`) with **884 checks** covering
     the lexer, values, hash table, bytecode chunks, and end-to-end programs
     (closures, recursion, shared upvalues, lists, error paths, IEEE edge
     cases, GC-safety patterns, and every resource limit above);
