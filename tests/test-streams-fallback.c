@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
+#include <string.h>
 
 static int fail_open_memstream;   /* how many upcoming open_memstream calls fail */
 static int fail_fopencookie_after = -1;   /* allow this many cookies, then fail */
@@ -32,12 +33,29 @@ static FILE *test_fopencookie(void *c, const char *mo, cookie_io_functions_t io)
     return fopencookie(c, mo, io);
 }
 
+/* stderr carries the fallback warning; redirect it to a file so the test
+ * can count episodes (round-22 F1: exactly one warning per episode). */
+static int count_warnings(const char *path) {
+    fflush(stderr);
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    int n = 0;
+    char line[256];
+    while (fgets(line, sizeof line, f))
+        if (strstr(line, "output capture unavailable")) n++;
+    fclose(f);
+    return n;
+}
+
 static int fails = 0;
 #define CHECK(cond, label) do { \
     if (cond) printf("ok: %s\n", label); \
     else { printf("FAIL: %s\n", label); fails = 1; } } while (0)
 
 int main(void) {
+    const char *cap = "build/test-stderr-capture.txt";
+    if (!freopen(cap, "w", stderr)) { printf("FAIL: cannot redirect stderr\n"); return 1; }
+
     /* Case A: the memstream itself fails - all-opens-fail lands on the glue
      * streams and the session still runs. */
     fail_open_memstream = 1;
@@ -69,6 +87,37 @@ int main(void) {
           "fallback: the tagged path buffers output records");
     fable_out_drain();
     CHECK(fable_out_len() == 0, "fallback: drain resets the record buffer");
+
+    /* Round-22 F1: a drain-time reopen failure is not silent and not
+     * permanent - it warns exactly once per episode, keeps retrying on
+     * later drains, and tagged capture recovers when memory frees. */
+    int before_episode = count_warnings(cap);
+    fail_fopencookie_after = 0;
+    fable_exec_len("print(2);", 9);
+    fable_out_drain();   /* reopen fails here */
+    CHECK(count_warnings(cap) == before_episode + 1,
+          "drain-fail: a drain-time reopen failure warns once");
+    CHECK(wbuf == NULL && wout == stdout, "drain-fail: the failed reopen falls back");
+    fable_out_drain();   /* still failing: same episode, no second warning */
+    fable_out_drain();
+    CHECK(count_warnings(cap) == before_episode + 1,
+          "drain-fail: repeated failing drains do not re-warn");
+    fail_fopencookie_after = -1;
+    fable_out_drain();   /* memory freed: the retry restores tagged capture */
+    CHECK(wbuf != NULL && vm.out == wout && vm.err == werr,
+          "drain-fail: a later drain retries the reopen and recovers");
+    CHECK(fable_exec_len("print(3);", 9) == 0 && fable_out_len() > 0,
+          "drain-fail: recovered capture buffers records again");
+    /* a NEW episode warns again */
+    fail_fopencookie_after = 0;
+    fable_out_drain();
+    fable_out_drain();
+    CHECK(count_warnings(cap) == before_episode + 2,
+          "drain-fail: a new failure episode warns again, once");
+    fail_fopencookie_after = -1;
+    fable_out_drain();
+    CHECK(wbuf != NULL, "drain-fail: capture recovers again after the second episode");
+
     printf("%s\n", fails ? "FAILURES" : "all stream-fallback checks passed");
     return fails;
 }

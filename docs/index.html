@@ -49,7 +49,7 @@
   their value, like the terminal REPL; a line that leaves a bracket open
   continues on the next line ("...").</p>
 </main>
-<script src="fable.js?v=93c2e5289c38"></script>
+<script src="fable.js?v=13f4ac474bdf"></script>
 <script>
 const out = document.getElementById('out');
 const inp = document.getElementById('in');
@@ -209,7 +209,18 @@ const programs = {
 };
 function runProgram(name){
   if (name === 'reset') {
-    M.ccall('fable_boot', null, [], []);
+    try {
+      M.ccall('fable_boot', null, [], []);
+    } catch (e) {
+      /* boot itself can throw (an ExitStatus on a still-exhausted heap):
+         say so, keep the session locked, and leave reset available so the
+         next try can succeed (round-22 N3) */
+      sessionDead = true;
+      inp.disabled = true;
+      printErr('fable: could not restart the interpreter (' + (e && e.message ? e.message : e) + ')');
+      printErr('the session stays locked - press "reset session" to try again');
+      return;
+    }
     sessionDead = false;   /* a fresh VM: the session lives again */
     inp.disabled = false;
     printCmd('fable> <session reset>');
@@ -231,7 +242,7 @@ function runProgram(name){
 /* the wasm fetch carries the same content-hash buster as the js tag, so a
    returning browser can never pair fresh glue with a stale cached wasm
    (round-14 F1); wasm/build.sh stamps both on every rebuild */
-FableModule({ print, printErr, locateFile: (path) => path + '?v=93c2e5289c38' }).then(m => {
+FableModule({ print, printErr, locateFile: (path) => path + '?v=13f4ac474bdf' }).then(m => {
   M = m;
   M.ccall('fable_boot', null, [], []);
   out.textContent = '';

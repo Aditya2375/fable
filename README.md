@@ -136,8 +136,7 @@ line (and says so) instead of wedging the session, and accumulated input is
 capped at the same 64 KB (`input too long`). Output is byte-faithful: valid
 UTF-8 prints unchanged, a byte that is not valid UTF-8 shows as U+FFFD, and
 a NUL byte shows as ␀ in place, without splitting its line. Output and
-errors stay in the exact order the program wrote them, and the terminal
-keeps the most recent 5000 lines (older lines drop behind a trim marker) so
+errors stay in the exact order the program wrote them, and keeps about the most recent 5000 lines (older lines drop behind a trim marker) so
 a large print loop cannot bloat the tab. If the interpreter itself runs out
 of memory, the session ends with a clear message and the input locks until
 "reset session" boots a fresh one.

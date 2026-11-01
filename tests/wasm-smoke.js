@@ -511,13 +511,18 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
         const printErr2 = t => { errs2.push(t); };
         const printCmd2 = () => {};
         let bootCalls = 0, execCalls = 0;
+        let bootThrows = false;   /* round-22 N3: a boot can throw too */
         const M2 = {
             _malloc: () => 64,
             _free: () => {},
             writeArrayToMemory: () => {},
             HEAPU8: new Uint8Array(0),
             ccall: (name) => {
-                if (name === "fable_boot") { bootCalls++; return 0; }
+                if (name === "fable_boot") {
+                    if (bootThrows) throw { name: "ExitStatus", status: 70 };
+                    bootCalls++;
+                    return 0;
+                }
                 if (name === "fable_exec_len") { execCalls++; throw { name: "ExitStatus", status: 70 }; }
                 return 0;
             }
@@ -536,6 +541,21 @@ factory({ print: s => { out += s + "\n"; }, printErr: s => { err += s + "\n"; } 
         fns.runProgram("reset");
         ok(bootCalls === 1 && !sessionDead && !inp.disabled, "demo: reset session boots a fresh VM and unlocks");
         ok(fns.exec("print(3);") === 1 && execCalls === 2, "demo: the revived session reaches the interpreter again");
+
+        /* round-22 N3: a throwing boot (still-exhausted heap) must not
+         * escape runProgram - the page says what happened, keeps the
+         * session locked, and reset stays available for a retry */
+        bootThrows = true;
+        const errBase = errs2.length;
+        fns.runProgram("reset");
+        ok(errs2.length === errBase + 2 && errs2[errBase].includes("could not restart") && errs2[errBase + 1].includes("reset session"),
+           "demo: a failed reset prints a clear error");
+        ok(sessionDead && inp.disabled && bootCalls === 1,
+           "demo: a failed reset keeps the session locked and the boot count honest");
+        bootThrows = false;
+        fns.runProgram("reset");
+        ok(!sessionDead && !inp.disabled && bootCalls === 2,
+           "demo: a reset retry after a failed boot revives the session");
     }
 
     process.exit(fails);

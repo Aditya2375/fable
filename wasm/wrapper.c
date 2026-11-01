@@ -35,6 +35,7 @@ static FILE *wbuf = NULL;              /* the combined record memstream */
 static char *wbuf_bytes = NULL;
 static size_t wbuf_len = 0;
 static FILE *wout = NULL, *werr = NULL;   /* unbuffered cookie streams over wbuf */
+static int capture_warned = 0;            /* one warning per failure episode (round-22 F1) */
 
 static ssize_t wbuf_write(void *cookie, const char *data, size_t n) {
     unsigned char hdr[5];
@@ -59,7 +60,7 @@ static int streams_open(void) {
     werr = wbuf ? fopencookie((void *)(uintptr_t)1, "w", io) : NULL;
     if (wout) setvbuf(wout, NULL, _IONBF, 0);   /* per-write records keep the interleave order */
     if (werr) setvbuf(werr, NULL, _IONBF, 0);
-    if (wbuf && wout && werr) return 1;
+    if (wbuf && wout && werr) { capture_warned = 0; return 1; }   /* a success re-arms the warning */
     if (werr) fclose(werr);
     if (wout) fclose(wout);
     if (wbuf) { fclose(wbuf); free(wbuf_bytes); }
@@ -67,6 +68,14 @@ static int streams_open(void) {
     wout = stdout;   /* memstream/cookie OOM: fall back to the glue's streams */
     werr = stderr;
     return 0;
+}
+
+/* The fallback loses byte-faithfulness, so it is never silent - but a
+ * failing reopen warns once per episode, not on every drain (round-22 F1). */
+static void capture_warn(void) {
+    if (capture_warned) return;
+    fprintf(stderr, "fable: warning: output capture unavailable (out of memory); output decoding is approximate\n");
+    capture_warned = 1;
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -85,8 +94,8 @@ int fable_boot(void) {
     web_lines = 0;
     pending_start = 1;
     booted = 1;
-    if (!streams_open())
-        fprintf(stderr, "fable: warning: output capture unavailable (out of memory); output decoding is approximate\n");
+    capture_warned = 0;   /* a fresh boot is a fresh episode: warn if it fails */
+    if (!streams_open()) capture_warn();
     vm_init(wout, werr);
     vm.repl = true;   /* expression statements echo, like the terminal REPL */
     return 0;
@@ -103,12 +112,20 @@ int fable_out_len(void) { if (wbuf) fflush(wbuf); return wbuf_bytes ? (int)wbuf_
 
 EMSCRIPTEN_KEEPALIVE
 void fable_out_drain(void) {
-    if (!wbuf) return;   /* fallback streams: nothing buffered */
+    if (!wbuf) {
+        /* on the fallback path an earlier open failed: retry the reopen on
+         * every drain so tagged capture recovers once memory frees, instead
+         * of staying on the glue streams for the rest of the session
+         * (round-22 F1) */
+        if (streams_open()) { vm.out = wout; vm.err = werr; }
+        else capture_warn();
+        return;
+    }
     fclose(werr);
     fclose(wout);
     fclose(wbuf);
     free(wbuf_bytes);
-    streams_open();
+    if (!streams_open()) capture_warn();   /* a mid-session reopen failure says so too */
     vm.out = wout;
     vm.err = werr;
 }
