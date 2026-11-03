@@ -1,0 +1,12 @@
+# fable
+
+> fable is a small, complete programming language: a bytecode interpreter written in C11 with lexically scoped variables, first-class functions, closures with shared upvalues, lists, strings, and a mark-sweep garbage collector. No dependencies beyond libc and libm; the interpreter core is about 3,000 lines of C.
+
+## Links
+
+- [Try it in the browser](https://aditya2375.github.io/fable/): the same C compiled to WebAssembly, running locally
+- [Source and documentation](https://github.com/Aditya2375/fable)
+
+## Author
+
+Aditya Kulkarni - https://github.com/Aditya2375
